@@ -1,0 +1,4 @@
+interface:
+  display_name: "Lacewing Digital Library"
+  short_description: "Resolve Neuropterida taxonomy with LDL/NSW"
+  default_prompt: "Use $lacewing-digital-library to resolve these Neuropterida names and return accepted names, nomenclatural history, type data, and LDL identifiers."
