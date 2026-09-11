@@ -40,11 +40,17 @@ A current accepted name search can return historical combinations that point to 
 
 When type, distribution, citations, figures, phylogeny, or keys are requested, resolve the current combination first and then call the corresponding record endpoint.
 
-For coordinate work or endpoint discovery, read [references/api.md](references/api.md). For batch name/coordinate processing, read [references/batch-resolution.md](references/batch-resolution.md).
+For coordinate work or endpoint discovery, read [references/api.md](references/api.md). For batch name/coordinate processing, read [references/batch-resolution.md](references/batch-resolution.md). For specimen/locality extraction from cited papers, read [references/literature-distribution.md](references/literature-distribution.md).
+
+## Literature-level distribution workflow
+
+LDL's distribution list is a source index, not the final locality dataset. When the user asks for literature-derived distribution points, expand every cited source/page and extract specimen/type/material records from the document. Preserve an evidence level so downstream analyses can distinguish direct paper material from LDL-only regional summaries. Match the user's locality-table convention when one is supplied, and keep LDL IDs for auditability.
+
+Use public copies first. Contributor access is optional and must use secure local credential discovery; never put a password in a prompt-generated command, MCP tool argument, output table, repository, or log.
 
 ## Execution
 
-Prefer the `lacewing-digital-library` MCP server when it is available. Use its high-level tools (`resolve_taxon`, `search_taxa`, `name_history`, `taxon_record`, `type_info`, `distribution`, `taxonomic_references`, `figures`, `phylogeny`, `identification_keys`, `bibliography`, `batch_resolve`, and `classification`) before reaching for raw endpoints. Use `raw_public_endpoint` only for advanced read-only queries against the allowlisted LDL frontend endpoints.
+Prefer the `lacewing-digital-library` MCP server when it is available. Use its high-level tools before reaching for raw endpoints. For literature-level distribution work, prefer `list_valid_extant_species`, `distribution_sources`, `literature_distribution_seed`, and `batch_literature_distribution_seed`; these preserve the cited `BibObjID`, `EDocID`, and page needed to recover specimen/locality evidence. Use `raw_public_endpoint` only for advanced read-only queries against the allowlisted LDL frontend endpoints.
 
 If the MCP server is unavailable, fall back to the bundled Python client. Keep request rates conservative because these endpoints are used by the LDL web frontend and are not a documented third-party API.
 

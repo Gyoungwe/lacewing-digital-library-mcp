@@ -42,6 +42,12 @@ Use $lacewing-digital-library to resolve Mantispa styriaca and summarize its acc
 | `identification_keys` | Which identification keys include this taxon? |
 | `bibliography` | What is LDL reference `BibObjID`, and which taxa/figures are linked to it? |
 | `batch_resolve` | Reconcile a tree tip list / CSV taxon list to current LDL taxonomy. |
+| `list_valid_extant_species` | List unique valid extant species in a family, suitable for reproducible sampling. |
+| `distribution_sources` | Expand a taxon into LDL distribution records with BibObjID, EDocID, source page, and bibliography metadata. |
+| `literature_distribution_seed` | Build a literature-extraction evidence package for one taxon. |
+| `batch_literature_distribution_seed` | Build literature-extraction evidence packages for many taxa. |
+| `credential_status` | Check whether optional contributor credentials are configured without exposing secrets. |
+| `edoc_search` | With locally configured contributor access, search an LDL EDoc PDF for short keyword contexts and PDF pages. |
 | `classification` | Retrieve the NSW classification data. |
 | `raw_public_endpoint` | Advanced read-only access to an allowlisted LDL endpoint. |
 | `health_check` | Can the server reach LDL, and what dataset/version info is visible? |
@@ -84,6 +90,14 @@ cp -R skill ~/.codex/skills/lacewing-digital-library
 ```
 
 For another MCP client, use a stdio configuration whose command is the environment's Python and whose arguments are `-m ldl_mcp`.
+
+## Optional LDL Contributor access
+
+Public endpoints remain the default. Restricted EDoc search is opt-in and credentials are never accepted as MCP tool arguments or committed to the repository.
+
+Set `LDL_USERNAME` and `LDL_PASSWORD` in the MCP process environment, or on macOS store only the username in `~/.config/lacewing-digital-library-mcp/config.json` and keep the password in Keychain under service `lacewing-digital-library-mcp`. Use `credential_status` to verify configuration without revealing the password.
+
+`edoc_search` returns only short matching contexts and PDF page numbers. It does not return or redistribute complete restricted documents.
 
 ## Data interpretation rules
 

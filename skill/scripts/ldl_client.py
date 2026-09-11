@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import json
+import os
+import platform
+import subprocess
 import time
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -11,7 +16,8 @@ from urllib3.util.retry import Retry
 class LDLClient:
     """Low-rate client for public endpoints used by the LDL web frontend."""
 
-    BASE_URL = "https://lacewing.tamu.edu/api"
+    SITE_URL = "https://lacewing.tamu.edu"
+    BASE_URL = f"{SITE_URL}/api"
     OPS = {
         "eq": "Op.eq",
         "starts": "Op.startsWith",
@@ -214,3 +220,93 @@ class LDLClient:
 
     def search_bibliography(self, criteria: dict[str, Any]) -> Any:
         return self._request("POST", "biblio/doBiblioSearch", criteria)
+
+    def valid_extant_species(self, family: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Return deterministic current valid extant species, deduplicated by species TaxObjID."""
+        rows = self.search_taxa(family=family, valid_only=True, extant_only=True, limit=1000)
+        by_tax: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            tax_id = row.get("CombSpec_TaxObjID")
+            if not tax_id or row.get("CombTaxStatus") != "valid":
+                continue
+            if row.get("TaxonRankBlockID") != 26 or row.get("IsUnidSp") != 0:
+                continue
+            by_tax.setdefault(int(tax_id), row)
+        def name_key(row: dict[str, Any]) -> str:
+            return " ".join(str(x) for x in [row.get("PresCombGenu"), row.get("PresCombSpec"), row.get("PresCombSubs")] if x).lower()
+        return sorted(by_tax.values(), key=name_key)[: max(1, min(limit, 200))]
+
+    def distribution_source_records(self, comb_obj_id: int, include_bibliography: bool = True) -> list[dict[str, Any]]:
+        """Flatten LDL's cited geographic records and optionally attach bibliography metadata."""
+        raw = self.distribution_citations(comb_obj_id)
+        records = raw.get("Syn_DistGeogBibObjList", []) if isinstance(raw, dict) else []
+        bib_cache: dict[int, Any] = {}
+        out: list[dict[str, Any]] = []
+        for rec in records:
+            row = dict(rec)
+            bib_id = row.get("Source_BibObjID")
+            if include_bibliography and bib_id:
+                bid = int(bib_id)
+                if bid not in bib_cache:
+                    bib_cache[bid] = self.bibliography(bid)
+                row["Bibliography"] = bib_cache[bid]
+            out.append(row)
+        return out
+
+    def credential_status(self) -> dict[str, Any]:
+        """Report whether optional contributor credentials are discoverable without exposing secrets."""
+        user, password, source = self._credential_pair()
+        return {"configured": bool(user and password), "source": source, "username_configured": bool(user)}
+
+    def _credential_pair(self) -> tuple[str | None, str | None, str]:
+        user = os.getenv("LDL_USERNAME")
+        password = os.getenv("LDL_PASSWORD")
+        if user and password:
+            return user, password, "environment"
+        config_path = Path.home() / ".config" / "lacewing-digital-library-mcp" / "config.json"
+        if config_path.exists():
+            try:
+                cfg = json.loads(config_path.read_text())
+                user = user or cfg.get("username")
+            except Exception:
+                pass
+        if user and platform.system() == "Darwin":
+            try:
+                proc = subprocess.run(
+                    ["security", "find-generic-password", "-s", "lacewing-digital-library-mcp", "-a", user, "-w"],
+                    capture_output=True, text=True, timeout=5, check=True,
+                )
+                password = proc.stdout.rstrip("\n")
+                if password:
+                    return user, password, "macos-keychain"
+            except Exception:
+                pass
+        return user, password, "not-configured"
+
+    def authenticate_contributor(self) -> bool:
+        """Authenticate using env/keychain credentials; never accepts secrets as function arguments."""
+        user, password, _ = self._credential_pair()
+        if not user or not password:
+            return False
+        self._throttle()
+        response = self.session.post(
+            f"{self.BASE_URL}/users/login",
+            json={"UserName": user, "Password": password},
+            timeout=self.timeout,
+        )
+        self._last_request = time.time()
+        return bool(response.ok)
+
+    def fetch_edoc_pdf(self, edoc_id: int) -> bytes:
+        """Fetch an LDL EDoc PDF with optional contributor auth; never exposes credentials."""
+        if not self.authenticate_contributor():
+            raise PermissionError("LDL contributor credentials are not configured in env/keychain")
+        self._throttle()
+        response = self.session.get(
+            f"{self.SITE_URL}/edoc/{int(edoc_id)}", timeout=self.timeout, allow_redirects=True
+        )
+        self._last_request = time.time()
+        response.raise_for_status()
+        if not response.content.startswith(b"%PDF"):
+            raise PermissionError("LDL EDoc did not return a PDF; contributor access may be unavailable for this record")
+        return response.content

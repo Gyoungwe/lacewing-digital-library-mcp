@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from io import BytesIO
+import re
 from typing import Any
+
+from pypdf import PdfReader
 
 from mcp.server import FastMCP
 
@@ -147,6 +151,133 @@ def distribution(scientific_name: str) -> dict[str, Any]:
         "distribution_note": epi.get("PresCombGeogDistNote"),
         "distribution_citations": _client.distribution_citations(comb_id),
     }
+
+
+@mcp.tool()
+def list_valid_extant_species(family: str, limit: int = 10) -> list[dict[str, Any]]:
+    """List deterministic current valid extant species in a family, deduplicated by TaxObjID and sorted by accepted name."""
+    rows = _client.valid_extant_species(family, limit=limit)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        tax_id = int(row["CombSpec_TaxObjID"])
+        epi = _client.epithet(tax_id)
+        out.append(_accepted_summary(row, epi) | {
+            "distribution_summary": epi.get("PresCombGeogDistSummary"),
+            "type_kind": epi.get("EpithPrimTypeKind"),
+            "type_locality": epi.get("EpithPrimTypeLocality"),
+        })
+    return out
+
+
+@mcp.tool()
+def distribution_sources(scientific_name: str, include_bibliography: bool = True) -> dict[str, Any]:
+    """Flatten the LDL literature sources that support geographic records for a taxon."""
+    hit, comb_id, tax_id = _resolved_context(scientific_name)
+    epi = _client.epithet(tax_id)
+    records = _client.distribution_source_records(comb_id, include_bibliography=include_bibliography)
+    return {
+        "resolved": _accepted_summary(hit, epi),
+        "distribution_summary": epi.get("PresCombGeogDistSummary"),
+        "source_count": len(records),
+        "sources": records,
+    }
+
+
+def _source_seed(rec: dict[str, Any]) -> dict[str, Any]:
+    bib = rec.get("Bibliography") if isinstance(rec.get("Bibliography"), dict) else {}
+    edoc = rec.get("Source_EDocBase") if isinstance(rec.get("Source_EDocBase"), dict) else {}
+    return {
+        "geography": rec.get("RecordFullGeogCite") or rec.get("RecordCountryCite"),
+        "country": rec.get("RecordCountryCite"),
+        "record_status": rec.get("RecordStatus"),
+        "BibObjID": rec.get("Source_BibObjID"),
+        "EDocID": rec.get("Source_EDocID"),
+        "source_page": rec.get("SourcePageCite"),
+        "source_citation": rec.get("SourceCiteShort"),
+        "title": bib.get("Title"),
+        "authors": bib.get("Auth"),
+        "year": bib.get("NomYear"),
+        "edoc_link": edoc.get("EDocLink"),
+        "public_edoc": edoc.get("PublicEDoc"),
+        "private_edoc": edoc.get("PrivateEDoc"),
+        "evidence_level": "LDL distribution citation",
+        "document_text_needed": True,
+    }
+
+
+@mcp.tool()
+def literature_distribution_seed(scientific_name: str) -> dict[str, Any]:
+    """Build a literature-extraction seed: taxon, type locality/coordinates, and every cited LDL distribution source/page."""
+    hit, comb_id, tax_id = _resolved_context(scientific_name)
+    epi = _client.epithet(tax_id)
+    sources = _client.distribution_source_records(comb_id, include_bibliography=True)
+    return {
+        "input_name": scientific_name,
+        "resolved": _accepted_summary(hit, epi),
+        "original_combination": epi.get("OrigCombSciName"),
+        "distribution_summary": epi.get("PresCombGeogDistSummary"),
+        "type_kind": epi.get("EpithPrimTypeKind"),
+        "type_locality": epi.get("EpithPrimTypeLocality"),
+        "type_coordinates": _client.type_coordinates(tax_id),
+        "literature_sources": [_source_seed(r) for r in sources],
+        "recommended_output_columns": [
+            "Species", "Country", "OrigLocation", "CorrectedLocation", "Latitude", "Longitude",
+            "Type", "Source", "Note", "CoordinateBasis", "EvidenceLevel", "ProcessingFlag",
+            "CombObjID", "TaxObjID", "BibObjID", "EDocID", "SourcePage", "SourceURL",
+        ],
+        "evidence_rule": "Do not turn country/province summaries into specimen localities. Extract material/type text from the cited document when available; otherwise retain the broader LDL record and flag it.",
+    }
+
+
+@mcp.tool()
+def batch_literature_distribution_seed(names: list[str]) -> dict[str, Any]:
+    """Build literature-distribution extraction seeds for up to 50 Neuropterida names."""
+    if len(names) > 50:
+        raise ValueError("batch_literature_distribution_seed accepts at most 50 names")
+    results: list[dict[str, Any]] = []
+    for name in names:
+        try:
+            results.append(literature_distribution_seed(name))
+        except Exception as exc:
+            results.append({"input_name": name, "error": str(exc)})
+    return {"count": len(results), "results": results}
+
+
+@mcp.tool()
+def credential_status() -> dict[str, Any]:
+    """Report whether optional LDL contributor credentials are available from environment/keychain without exposing them."""
+    return _client.credential_status()
+
+
+@mcp.tool()
+def edoc_search(edoc_id: int, terms: list[str], max_hits: int = 20) -> dict[str, Any]:
+    """Search an authorized LDL EDoc PDF and return short page snippets around requested terms; credentials are read only from secure local configuration."""
+    clean_terms = [t.strip() for t in terms if t and t.strip()]
+    if not clean_terms:
+        raise ValueError("Provide at least one search term")
+    if len(clean_terms) > 12:
+        raise ValueError("At most 12 search terms are allowed")
+    pdf = _client.fetch_edoc_pdf(int(edoc_id))
+    reader = PdfReader(BytesIO(pdf))
+    hits: list[dict[str, Any]] = []
+    for page_index, page in enumerate(reader.pages):
+        text = page.extract_text() or ""
+        flat = re.sub(r"\s+", " ", text).strip()
+        low = flat.lower()
+        for term in clean_terms:
+            pos = low.find(term.lower())
+            if pos < 0:
+                continue
+            start = max(0, pos - 220)
+            end = min(len(flat), pos + len(term) + 320)
+            hits.append({
+                "pdf_page": page_index + 1,
+                "term": term,
+                "snippet": flat[start:end],
+            })
+            if len(hits) >= max(1, min(max_hits, 30)):
+                return {"EDocID": edoc_id, "page_count": len(reader.pages), "hits": hits, "truncated": True}
+    return {"EDocID": edoc_id, "page_count": len(reader.pages), "hits": hits, "truncated": False}
 
 
 @mcp.tool()
