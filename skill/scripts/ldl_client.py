@@ -70,7 +70,7 @@ class LDLClient:
         )
         self.session.mount("https://", HTTPAdapter(max_retries=retry))
         self.session.headers.update({
-            "User-Agent": "lacewing-digital-library-mcp/0.1 (research use; low-rate)",
+            "User-Agent": "lacewing-digital-library-mcp/0.2 (research use; low-rate)",
             "Accept": "application/json",
         })
         self._last_request = 0.0
@@ -140,7 +140,7 @@ class LDLClient:
         return rows[: max(1, min(limit, 1000))]
 
     def search_name(self, scientific_name: str) -> list[dict[str, Any]]:
-        parts = scientific_name.strip().split()
+        parts = scientific_name.split()
         if not parts:
             return []
         if len(parts) == 1:
@@ -148,19 +148,31 @@ class LDLClient:
         return self.search_taxa(genus=parts[0], species=parts[1], limit=500)
 
     def resolve_current(self, scientific_name: str) -> dict[str, Any] | None:
-        rows = self.search_name(scientific_name)
+        requested = " ".join(scientific_name.split())
+        if not requested:
+            return None
+        rows = self.search_name(requested)
         if not rows:
             return None
-        parts = scientific_name.strip().split()
-        genus = parts[0] if parts else ""
-        species = parts[1] if len(parts) > 1 else ""
-        exact_taxon = [r for r in rows if r.get("PresCombGenu") == genus and r.get("PresCombSpec") == species]
+        parts = requested.split()
+        genus = parts[0].casefold()
+        species = parts[1].casefold() if len(parts) > 1 else ""
+        exact_taxon = [
+            r for r in rows
+            if str(r.get("PresCombGenu") or "").casefold() == genus
+            and str(r.get("PresCombSpec") or "").casefold() == species
+        ]
         candidates = exact_taxon or rows
-        for row in candidates:
-            if row.get("CombTaxStatus") == "valid" and row.get("CombGenuToSubs") == scientific_name:
+        requested_folded = requested.casefold()
+        exact_name = [
+            r for r in candidates
+            if " ".join(str(r.get("CombGenuToSubs") or "").split()).casefold() == requested_folded
+        ]
+        for row in exact_name:
+            if str(row.get("CombTaxStatus") or "").casefold() == "valid":
                 return row
         for row in candidates:
-            if row.get("CombTaxStatus") == "valid":
+            if str(row.get("CombTaxStatus") or "").casefold() == "valid":
                 return row
         return candidates[0]
 

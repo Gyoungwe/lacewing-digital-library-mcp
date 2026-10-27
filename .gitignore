@@ -6,3 +6,9 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+
+# local-only: original downloader bundle (contains browser profile/cookies and a Windows venv)
+LDL属文献下载器/
+_downloader_src/
+# runtime data
+.ldl-mcp/

@@ -70,7 +70,7 @@ class LDLClient:
         )
         self.session.mount("https://", HTTPAdapter(max_retries=retry))
         self.session.headers.update({
-            "User-Agent": "lacewing-digital-library-mcp/0.1 (research use; low-rate)",
+            "User-Agent": "lacewing-digital-library-mcp/0.2 (research use; low-rate)",
             "Accept": "application/json",
         })
         self._last_request = 0.0
@@ -140,7 +140,7 @@ class LDLClient:
         return rows[: max(1, min(limit, 1000))]
 
     def search_name(self, scientific_name: str) -> list[dict[str, Any]]:
-        parts = scientific_name.strip().split()
+        parts = scientific_name.split()
         if not parts:
             return []
         if len(parts) == 1:
@@ -148,19 +148,31 @@ class LDLClient:
         return self.search_taxa(genus=parts[0], species=parts[1], limit=500)
 
     def resolve_current(self, scientific_name: str) -> dict[str, Any] | None:
-        rows = self.search_name(scientific_name)
+        requested = " ".join(scientific_name.split())
+        if not requested:
+            return None
+        rows = self.search_name(requested)
         if not rows:
             return None
-        parts = scientific_name.strip().split()
-        genus = parts[0] if parts else ""
-        species = parts[1] if len(parts) > 1 else ""
-        exact_taxon = [r for r in rows if r.get("PresCombGenu") == genus and r.get("PresCombSpec") == species]
+        parts = requested.split()
+        genus = parts[0].casefold()
+        species = parts[1].casefold() if len(parts) > 1 else ""
+        exact_taxon = [
+            r for r in rows
+            if str(r.get("PresCombGenu") or "").casefold() == genus
+            and str(r.get("PresCombSpec") or "").casefold() == species
+        ]
         candidates = exact_taxon or rows
-        for row in candidates:
-            if row.get("CombTaxStatus") == "valid" and row.get("CombGenuToSubs") == scientific_name:
+        requested_folded = requested.casefold()
+        exact_name = [
+            r for r in candidates
+            if " ".join(str(r.get("CombGenuToSubs") or "").split()).casefold() == requested_folded
+        ]
+        for row in exact_name:
+            if str(row.get("CombTaxStatus") or "").casefold() == "valid":
                 return row
         for row in candidates:
-            if row.get("CombTaxStatus") == "valid":
+            if str(row.get("CombTaxStatus") or "").casefold() == "valid":
                 return row
         return candidates[0]
 
@@ -255,8 +267,15 @@ class LDLClient:
 
     def credential_status(self) -> dict[str, Any]:
         """Report whether optional contributor credentials are discoverable without exposing secrets."""
+        from .auth import cookie_summary
+
         user, password, source = self._credential_pair()
-        return {"configured": bool(user and password), "source": source, "username_configured": bool(user)}
+        return {
+            "configured": bool(user and password),
+            "source": source,
+            "username_configured": bool(user),
+            "browser_session": cookie_summary(),
+        }
 
     def _credential_pair(self) -> tuple[str | None, str | None, str]:
         user = os.getenv("LDL_USERNAME")
@@ -298,15 +317,19 @@ class LDLClient:
         return bool(response.ok)
 
     def fetch_edoc_pdf(self, edoc_id: int) -> bytes:
-        """Fetch an LDL EDoc PDF with optional contributor auth; never exposes credentials."""
-        if not self.authenticate_contributor():
-            raise PermissionError("LDL contributor credentials are not configured in env/keychain")
+        """Fetch an LDL EDoc PDF using the saved browser session, else env/keychain credentials."""
+        from .auth import build_session, load_cookies
+
+        if load_cookies():
+            session = build_session()
+        elif self.authenticate_contributor():
+            session = self.session
+        else:
+            raise PermissionError("No LDL login: run auth_start (browser login) or configure env/keychain credentials")
         self._throttle()
-        response = self.session.get(
-            f"{self.SITE_URL}/edoc/{int(edoc_id)}", timeout=self.timeout, allow_redirects=True
-        )
+        response = session.get(f"{self.SITE_URL}/edoc/{int(edoc_id)}", timeout=max(self.timeout, 120), allow_redirects=True)
         self._last_request = time.time()
         response.raise_for_status()
         if not response.content.startswith(b"%PDF"):
-            raise PermissionError("LDL EDoc did not return a PDF; contributor access may be unavailable for this record")
+            raise PermissionError("LDL EDoc did not return a PDF; the session may have expired (run auth_start) or access is unavailable")
         return response.content
