@@ -30,10 +30,11 @@ COORDINATE_BASES = {"type_specimen", "literature_locality", "georeferenced", "oc
 FIELDS = (
     "evidence_id", "dataset", "species", "accepted_name", "input_name",
     "locality_original", "locality_normalized", "country",
-    "latitude", "longitude", "coordinate_basis", "coordinate_uncertainty_m", "georeference_source", "type_status",
-    "collector", "collection_date", "source_citation",
+    "latitude", "longitude", "coordinate_basis", "coordinate_uncertainty_m", "georeference_source", "coordinate_precision",
+    "elevation_m", "type_status", "collector", "collection_date", "source_citation",
     "BibObjID", "EDocID", "sha256", "pdf_page", "evidence_quote",
-    "evidence_level", "confidence", "review_status", "quote_check", "quote_text_source", "notes", "recorded_at",
+    "evidence_level", "confidence", "review_status", "quote_check", "quote_text_source", "extraction_method", "attribution",
+    "notes", "recorded_at",
 )
 
 

@@ -18,7 +18,9 @@ def make_pdf(pages: list[str]) -> bytes:
     objects.append(f"<< /Type /Pages /Kids [{kids}] /Count {len(pages)} >>".encode())
     font_id = 3 + 2 * len(pages)
     for i, text in enumerate(pages):
-        lines = [text[j : j + 80] for j in range(0, len(text), 80)] or [""]
+        import textwrap
+
+        lines = textwrap.wrap(text, 80) or [""]
         ops = ["BT", "/F1 10 Tf", "14 TL", "50 780 Td"]
         for line in lines:
             safe = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
@@ -49,18 +51,60 @@ PDF_100 = make_pdf(
         "Testus alpha sp. n. Material examined. Holotype male, CHINA: Yunnan, Kunming, 25.04N 102.71E, 1900 m, 12.vii.2001, leg. Wang.",
     ]
 )
-PDF_101 = make_pdf(["Testus beta. Distribution: Japan (Honshu)."])
+PDF_101 = make_pdf(
+    [
+        "41 Journal of Testology 3 Introduction to the Testus fauna of Japan and its neighbours, a long running text.",
+        "42 Journal of Testology 3 Testus beta Sato, 1999. Material examined. JAPAN: Honshu, Tokyo, 8 Aug 1987, leg. Sato, 1 female; Hokkaido, Sapporo, 2 Jul 1990, 1 male.",
+        "43 Journal of Testology 3 Testus beta. Diagnosis. Wings hyaline. Remarks. Common in lowlands.",
+    ]
+)
+
+GEONAMES_FIXTURE = {
+    "CN": [
+        (1804651, "Kunming", 25.03889, 102.71833, "P", "PPLA", "29", 3388231),
+        (1792943, "Changli", 39.70647, 119.1603, "P", "PPLA3", "10", 50000),
+    ],
+    "JP": [
+        (1850147, "Tokyo", 35.6895, 139.69171, "P", "PPLC", "40", 8336599),
+        (2128295, "Sapporo", 43.06417, 141.34694, "P", "PPLA", "12", 1883027),
+        (1862415, "Honshu", 36.0, 138.0, "T", "ISL", "", 0),
+        (2130037, "Hokkaido", 43.5, 142.5, "A", "ADM1", "12", 0),
+    ],
+}
+ADMIN1_FIXTURE = "CN.29\tYunnan\tYunnan\t1785694\nCN.10\tHebei\tHebei\t1808773\nJP.12\tHokkaido\tHokkaido\t2130037\nJP.40\tTokyo\tTokyo\t1850144\n"
 
 
-def _citation(bib: int, edoc: int, cite: str) -> dict[str, Any]:
+def write_gazetteer(home) -> None:
+    """Pre-build GeoNames indexes from tiny fixtures so tests never download."""
+    from pathlib import Path
+
+    from ldl_mcp import gazetteer
+
+    folder = Path(home) / "gazetteer"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "admin1CodesASCII.txt").write_text(ADMIN1_FIXTURE, encoding="utf-8")
+    for iso2, rows in GEONAMES_FIXTURE.items():
+        lines = []
+        for gid, name, lat, lon, fclass, fcode, admin1, pop in rows:
+            cols = [str(gid), name, name, "", str(lat), str(lon), fclass, fcode, iso2, "", admin1, "", "", "", str(pop), "", "", "", ""]
+            lines.append("\t".join(cols))
+        src = folder / f"fixture-{iso2}.txt"
+        src.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        gazetteer.ensure_country(iso2, src)
+
+
+def _citation(bib: int, edoc: int, cite: str, page: str = "p. 2", geog: str = "China : Yunnan (province)", status: str = "accepted", cited_as: str = "(not available)") -> dict[str, Any]:
     return {
         "Source_BibObjID": bib,
         "Source_EDocID": edoc,
         "Source_EDocBase": {"EDocID": edoc} if edoc else None,
         "SourceAuthYearCite": cite,
-        "SourcePageCite": "p. 2",
-        "RecordFullGeogCite": "China: Yunnan",
-        "RecordCountryCite": "China",
+        "SourceCiteShort": cite,
+        "SourcePageCite": page,
+        "RecordFullGeogCite": geog,
+        "RecordCountryCite": geog.split(" : ")[0],
+        "RecordStatus": status,
+        "CitedAsCombCite": cited_as,
     }
 
 
@@ -113,7 +157,11 @@ class FakeLDL(BaseAdapter):
             }[comb]
             return self._json(request, {"Syn_BibObjAnnotList": rows})
         if path == "/api/species/getSpecDistCitByPk":
-            rows = {1: [_citation(10, 100, "Smith 2001")], 2: []}[comb]
+            rows = {
+                1: [_citation(10, 100, "Smith 2001")],
+                2: [_citation(12, 101, "Sato 1999", "p. 42", "Japan : Honshu (island)", cited_as="Testus beta"),
+                    _citation(12, 101, "Sato 1999", "p. 42", "Russia", status="unaccepted (doubtful)")],
+            }[comb]
             return self._json(request, {"Syn_DistGeogBibObjList": rows})
         if path == "/api/species/getSpecFigCitByPk":
             return self._json(request, {"Syn_BibObjPartAnnotList": []})
@@ -168,13 +216,30 @@ class StubClient:
         return [r for r in rows if tax_obj_id is None or r["Type_TaxObjID"] == tax_obj_id]
 
     def distribution_source_records(self, comb_obj_id: int, include_bibliography: bool = True) -> list[dict[str, Any]]:
-        return [{"RecordFullGeogCite": "China", "RecordCountryCite": "China", "Source_BibObjID": 10, "Source_EDocID": 100, "SourceCiteShort": "Smith 2001"}]
+        payload = self.raw_public("species/getSpecDistCitByPk", {"CombObjID": comb_obj_id})
+        return payload.get("Syn_DistGeogBibObjList", []) or [
+            {"RecordFullGeogCite": "China", "RecordCountryCite": "China", "Source_BibObjID": 10, "Source_EDocID": 100, "SourceCiteShort": "Smith 2001", "RecordStatus": "accepted"}
+        ]
+
+    def search_name(self, name: str) -> list[dict[str, Any]]:
+        row = self.resolve_current(name)
+        return [row, {**row, "CombObjID": 99, "CombGenuToSubs": "Oldgenus " + name.split()[-1]}] if row else []
+
+    def raw_public_rows(self) -> None:  # pragma: no cover - kept for symmetry
+        return None
 
     def raw_public(self, endpoint: str, payload: dict[str, Any] | None = None) -> Any:
         adapter = FakeLDL()
         session = requests.Session()
         session.mount("https://", adapter)
         return session.post(f"https://lacewing.tamu.edu/api/{endpoint}", json=payload).json()
+
+    def search(self, where: dict[str, Any]) -> list[dict[str, Any]]:
+        return [{**r, "PresCombSpec": r["CombGenuToSubs"].split()[1], "TaxonIsExtant": -1, "TaxonIsExtinct": 0, "PresCombFami": "Testidae", "PresCombOrde": "Neuroptera"} for r in self.rows.values()]
+
+    @staticmethod
+    def condition(value: Any, op: str = "eq") -> dict[str, Any]:
+        return {"Op.eq": value}
 
     def bibliography(self, bib_id: int) -> dict[str, Any]:
         return {"Auth": "Smith, J.", "Title": "Revision of Testus", "NomYear": "2001", "Journal": "Zootaxa"}

@@ -42,6 +42,38 @@ def _taxon_row(client: LDLClient, hit: dict[str, Any], input_name: str) -> dict[
     }
 
 
+def _current_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One row per valid species TaxObjID, preferring the row whose name is the present combination."""
+    by_tax: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        tax_id = row.get("CombSpec_TaxObjID")
+        if not tax_id or row.get("CombTaxStatus") != "valid":
+            continue
+        present = " ".join(str(x) for x in [row.get("PresCombGenu"), row.get("PresCombSpec"), row.get("PresCombSubs")] if x)
+        current = by_tax.get(int(tax_id))
+        if current is None or (row.get("CombGenuToSubs") == present and current.get("CombGenuToSubs") != present):
+            by_tax[int(tax_id)] = row
+    return sorted(by_tax.values(), key=lambda r: str(r.get("CombGenuToSubs") or "").casefold())
+
+
+def _row_taxon(row: dict[str, Any]) -> dict[str, Any]:
+    extinct = row.get("TaxonIsExtinct") == -1
+    return {
+        "input_name": str(row.get("CombGenuToSubs") or ""),
+        "accepted_name": row.get("CombGenuToSubs"),
+        "author": row.get("ASAuth"),
+        "year": row.get("ASYear"),
+        "status": row.get("CombTaxStatus"),
+        "CombObjID": row.get("CombObjID"),
+        "TaxObjID": row.get("CombSpec_TaxObjID"),
+        "order": row.get("PresCombOrde"),
+        "family": row.get("PresCombFami"),
+        "genus": row.get("PresCombGenu"),
+        "extant_extinct": "extinct" if extinct else ("extant" if row.get("TaxonIsExtant") == -1 else None),
+        "original_combination": None,
+    }
+
+
 def freeze_scope(
     client: LDLClient,
     genus: str | None = None,
@@ -49,9 +81,10 @@ def freeze_scope(
     names: list[str] | None = None,
     extant_only: bool = False,
     label: str | None = None,
+    order: str | None = None,
 ) -> dict[str, Any]:
-    if not (genus or family or names):
-        raise ValueError("Provide genus, family or names")
+    if not (genus or family or names or order):
+        raise ValueError("Provide order, family, genus or names")
     taxa: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
     if names:
@@ -68,14 +101,14 @@ def freeze_scope(
                 continue
             taxa.append(_taxon_row(client, hit, name))
     else:
-        rows = client.search_taxa(genus=genus, family=family, valid_only=True, extant_only=extant_only, limit=1000)
-        by_tax: dict[int, dict[str, Any]] = {}
-        for row in rows:
-            tax_id = row.get("CombSpec_TaxObjID")
-            if tax_id and row.get("CombTaxStatus") == "valid":
-                by_tax.setdefault(int(tax_id), row)
-        for row in sorted(by_tax.values(), key=lambda r: str(r.get("CombGenuToSubs") or "").casefold()):
-            taxa.append(_taxon_row(client, row, str(row.get("CombGenuToSubs") or "")))
+        where: dict[str, Any] = {"TaxonRankBlockID": 26, "IsUnidSp": 0, "CombLeastTaxObjIsValid": -1}
+        for field, value in (("PresCombOrde", order), ("PresCombFami", family), ("PresCombGenu", genus)):
+            if value:
+                where[field] = client.condition(value, "eq")
+        if extant_only:
+            where["TaxonIsExtant"] = -1
+        for row in _current_rows(client.search(where)):
+            taxa.append(_row_taxon(row))
     seen: set[Any] = set()
     unique = []
     for row in taxa:
@@ -84,12 +117,12 @@ def freeze_scope(
             row["duplicate_of_taxon"] = True
         seen.add(key)
         unique.append(row)
-    query = {"genus": genus, "family": family, "names": names, "extant_only": extant_only}
+    query = {"order": order, "family": family, "genus": genus, "names": names, "extant_only": extant_only}
     try:
         versions = client.species_versions()
     except Exception:
         versions = None
-    scope_id = stable_id(label or genus or family or "names", {"query": query, "taxa": [t["TaxObjID"] for t in unique]})
+    scope_id = stable_id(label or genus or family or order or "names", {"query": query, "taxa": [t["TaxObjID"] for t in unique]})
     counts: dict[str, int] = {}
     for row in unique:
         status = str(row.get("status") or "unknown")
@@ -131,6 +164,16 @@ def list_scopes() -> list[dict[str, Any]]:
 
 def literature_plan(client: LDLClient, scope_id: str, categories: list[str] | None = None) -> dict[str, Any]:
     scope = load_scope(scope_id)
+    from .metadata import cached_plan
+
+    cached = cached_plan(scope_id)
+    if cached and cached.get("complete") and not categories:
+        return {**cached, "plan_id": f"metadata-{scope_id}", "source": "metadata job cache"}
+    if scope["taxon_count"] > 60:
+        raise ValueError(
+            f"Scope has {scope['taxon_count']} taxa; run download_start(scope_id=..., metadata_only=True) first, "
+            "then call literature_plan again (it will use the cached metadata)."
+        )
     wanted = [c for _, c in SCREENS if not categories or c in categories]
     records: list[dict[str, str]] = []
     unavailable: list[dict[str, Any]] = []

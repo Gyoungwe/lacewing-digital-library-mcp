@@ -33,8 +33,10 @@ BASIS_LABELS = {
     "type_specimen": "Type locality (LDL)",
     "literature_locality": "Literature locality",
     "georeferenced": "Georeferenced locality",
-    "occurrence": "Occurrence record",
+    "occurrence": "GBIF occurrence",
 }
+# Flags that do not hide a point by default; everything else needs include_flagged=True.
+SOFT_FLAGS = {"duplicate_point", "integer_degree_precision", "gbif_no_uncertainty"}
 THEMES: dict[str, dict[str, Any]] = {
     "nature_like": {
         "font_size": 7,
@@ -270,8 +272,11 @@ def render_map(
     dpi: int = 600,
     title: str | None = None,
 ) -> dict[str, Any]:
+    import logging
+
     import matplotlib
 
+    logging.getLogger("fontTools").setLevel(logging.WARNING)
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
@@ -303,7 +308,7 @@ def render_map(
             continue
         flags = [f for f in str(row.get("qc_flags") or "").split(";") if f]
         hard = [f for f in flags if f in {"out_of_range", "zero_zero", "evidence_rejected", "incomplete_coordinates"}]
-        if hard or (flags and not include_flagged and any(f not in {"duplicate_point", "integer_degree_precision"} for f in flags)):
+        if hard or (flags and not include_flagged and any(f not in SOFT_FLAGS for f in flags)):
             excluded.append({"row_id": row["row_id"], "reason": ",".join(flags)})
             continue
         plotted.append(row)
@@ -376,15 +381,17 @@ def render_map(
             if panel and row["species"] != panel:
                 continue
             kw = {"transform": transform} if transform is not None else {}
+            external = row["coordinate_basis"] == "occurrence"
             ax.scatter(
                 float(row["longitude"]),
                 float(row["latitude"]),
-                s=theme["marker_size"],
+                s=theme["marker_size"] * (0.45 if external else 1),
                 marker=BASIS_MARKERS.get(row["coordinate_basis"], "o"),
                 facecolor=colours[row["species"]],
-                edgecolor="black",
+                edgecolor="none" if external else "black",
+                alpha=0.55 if external else 1,
                 linewidth=theme["line_width"] * 0.6,
-                zorder=4,
+                zorder=3 if external else 4,
                 **kw,
             )
         if len(panels) > 1:
@@ -459,7 +466,10 @@ def render_map(
         f"({', '.join('*' + s + '*' for s in species_names[:6])}{', …' if len(species_names) > 6 else ''}). "
         f"Symbols show coordinate basis: {basis_text}. Type localities are from LDL georeferenced type-specimen records "
         f"and do not represent complete distributions. Basemap: {basemap_info.get('source')}. "
-        f"Data: LDL (lacewing.tamu.edu), dataset {dataset_id}, generated {manifest['generated_at'][:10]}.\n"
+        f"Data: LDL (lacewing.tamu.edu), dataset {dataset_id}, generated {manifest['generated_at'][:10]}."
+        + (" GBIF occurrences (small translucent symbols) are an independent comparison layer from the GBIF.org API;"
+           " cite a GBIF download DOI for the same query in publications." if counts.get("occurrence") else "")
+        + "\n"
     )
     (folder / "caption.md").write_text(caption, encoding="utf-8")
     return {**manifest, "folder": str(folder), "caption": caption}

@@ -9,7 +9,7 @@ from pypdf import PdfReader
 
 from mcp.server import FastMCP
 
-from . import auth, distribution, evidence, export, figures, jobs, library, merge, research_scope
+from . import auth, distribution, evidence, export, figures, gazetteer, jobs, library, lit_distribution, merge, research_scope
 from .client import LDLClient
 from .downloader import DOWNLOAD_MODES
 from .paths import libraries_dir, subdir
@@ -403,9 +403,10 @@ def _download_params(
     output_parent: str | None,
     download_mode: str,
     refresh: bool,
+    scope_id: str | None = None,
 ) -> dict[str, Any]:
-    if not (genus or comb_obj_id or monograph_url):
-        raise ValueError("Provide genus, comb_obj_id or monograph_url")
+    if not (genus or comb_obj_id or monograph_url or scope_id):
+        raise ValueError("Provide genus, comb_obj_id, monograph_url or scope_id")
     if download_mode not in DOWNLOAD_MODES:
         raise ValueError(f"download_mode must be one of {sorted(DOWNLOAD_MODES)}")
     parent = Path(output_parent).expanduser() if output_parent else libraries_dir()
@@ -416,6 +417,8 @@ def _download_params(
         "output_parent": str(parent.resolve()),
         "download_mode": download_mode,
         "refresh": refresh,
+        "scope_id": scope_id,
+        "scope_label": (research_scope.load_scope(scope_id).get("label") or scope_id) if scope_id else None,
     }
 
 
@@ -437,14 +440,24 @@ def download_start(
     genus: str | None = None,
     comb_obj_id: int | None = None,
     monograph_url: str | None = None,
+    scope_id: str | None = None,
+    metadata_only: bool = False,
     output_parent: str | None = None,
     download_mode: str = "fast",
     refresh: bool = False,
 ) -> dict[str, Any]:
-    """Start a background job downloading every whole-work EDoc cited in Taxon/Distribution/Image Citations for all species of a genus, with r#/EDoc/SHA-256 dedup, Range chunking, checkpoints and a failure list. download_mode: fast | stable | retry-failed. Requires auth_start first. Output: <output_parent>/LDL_<Genus>/ (compatible with the original downloader)."""
+    """Start a background job. With genus/comb_obj_id/monograph_url: download every whole-work EDoc cited in Taxon/Distribution/Image Citations for all species of a genus. With scope_id (from freeze_taxon_scope, e.g. an order or family): one shared library for the whole scope, so papers cited across genera are downloaded once. metadata_only=True (needs scope_id, no login): harvest species records + all citations and build species_catalog.csv, citations.csv and a ranked literature plan without downloading PDFs. download_mode: fast | stable | retry-failed. Dedup by r#/EDoc/SHA-256, Range chunks, checkpoints, failure list."""
+    if metadata_only:
+        if not scope_id:
+            raise ValueError("metadata_only needs scope_id (create one with freeze_taxon_scope)")
+        scope = research_scope.load_scope(scope_id)
+        job = jobs.start("metadata", {"scope_id": scope_id, "output_parent": str(subdir("metadata"))})
+        view = _job_view(job, 0)
+        view["estimate"] = {"taxa": scope["taxon_count"], "requests": scope["taxon_count"] * 4, "minutes_at_0.35s": round(scope["taxon_count"] * 4 * 0.45 / 60)}
+        return view
     if not auth.load_cookies():
         return {"status": "auth_required", "message": "No saved LDL session. Call auth_start, log in, click save, then retry."}
-    params = _download_params(genus, comb_obj_id, monograph_url, output_parent, download_mode, refresh)
+    params = _download_params(genus, comb_obj_id, monograph_url, output_parent, download_mode, refresh, scope_id)
     return _job_view(jobs.start("download", params), 0)
 
 
@@ -564,14 +577,15 @@ def library_merge(parent: str, destination: str | None = None, mode: str = "copy
 
 @mcp.tool()
 def freeze_taxon_scope(
+    order: str | None = None,
     genus: str | None = None,
     family: str | None = None,
     names: list[str] | None = None,
     extant_only: bool = False,
     label: str | None = None,
 ) -> dict[str, Any]:
-    """Freeze an immutable research scope (accepted taxa with CombObjID/TaxObjID, status, extant/extinct, unresolved names, LDL data version). Returns a scope_id used by later steps."""
-    scope = research_scope.freeze_scope(_client, genus=genus, family=family, names=names, extant_only=extant_only, label=label)
+    """Freeze an immutable research scope from an order (Neuroptera/Megaloptera/Raphidioptera), family, genus or name list: accepted valid species with CombObjID/TaxObjID, status, extant/extinct, unresolved names, LDL data version. Returns a scope_id used by downloads, metadata, evidence and maps."""
+    scope = research_scope.freeze_scope(_client, genus=genus, family=family, names=names, extant_only=extant_only, label=label, order=order)
     return {**{k: v for k, v in scope.items() if k != "taxa"}, "taxa": scope["taxa"][:200], "taxa_truncated": len(scope["taxa"]) > 200}
 
 
@@ -619,13 +633,47 @@ def distribution_dataset(
     include_type_coordinates: bool = True,
     include_ldl_distribution: bool = True,
     extent: list[float] | None = None,
+    include_gbif: bool = False,
+    gbif_max_records: int = 300,
+    gbif_basis_of_record: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build a normalized distribution dataset from LDL type-specimen coordinates, LDL distribution citations (country_summary, never plotted) and recorded literature evidence, then run coordinate QC (range, 0/0, duplicates, precision, study extent [lon_min, lon_max, lat_min, lat_max])."""
+    """include_gbif=True adds GBIF occurrences (coordinate_basis 'occurrence') as a separate comparison layer; gbif_basis_of_record e.g. ['PRESERVED_SPECIMEN'] to drop photo observations. Writes coverage.csv: per taxon, LDL countries with/without point evidence and points outside LDL countries.
+    Build a normalized distribution dataset from LDL type-specimen coordinates, LDL distribution citations (country_summary, never plotted) and recorded literature evidence, then run coordinate QC (range, 0/0, duplicates, precision, study extent [lon_min, lon_max, lat_min, lat_max])."""
     result = distribution.build(
         _client, name, scope_id=scope_id, names=names, evidence_dataset=evidence_dataset,
         include_type_coordinates=include_type_coordinates, include_ldl_distribution=include_ldl_distribution, extent=extent,
+        include_gbif=include_gbif, gbif_max_records=max(1, min(gbif_max_records, 3000)), gbif_basis_of_record=gbif_basis_of_record,
     )
     return result
+
+
+@mcp.tool()
+def literature_distribution(
+    root: str,
+    dataset: str,
+    scope_id: str | None = None,
+    names: list[str] | None = None,
+    georeference: bool = True,
+    max_pages_per_document: int = 40,
+) -> dict[str, Any]:
+    """Extract specimen/type localities from downloaded literature for each taxon and store them as evidence: finds LDL-cited pages and pages naming the taxon (incl. original/historical/'cited as' names), parses material/type records (country, locality, coordinates, elevation, date, collector, type status), georeferences records without printed coordinates via GeoNames within the stated country/province, and flags points outside the stated country or outside LDL's accepted countries as needs_review."""
+    return lit_distribution.run(_client, root, dataset, scope_id=scope_id, names=names, georeference=georeference, max_pages_per_document=max_pages_per_document)
+
+
+@mcp.tool()
+def georeference_locality(locality: str, country: str, admin1: str | None = None) -> dict[str, Any]:
+    """Resolve one locality string to coordinates with GeoNames (offline after first per-country download), constrained to the country and optional province. Returns resolved/probable/coarse/ambiguous/not_found with uncertainty radius and source; ambiguous results list candidates instead of guessing."""
+    return gazetteer.georeference(locality, country, admin1)
+
+
+@mcp.tool()
+def distribution_coverage(dataset_id: str, species: str | None = None) -> dict[str, Any]:
+    """Per taxon: LDL accepted and doubtful countries, countries backed by type/literature/GBIF points, LDL countries still without point evidence, and point countries not in LDL (possible new records or errors)."""
+    data = distribution.load(dataset_id)
+    rows = distribution.read_coverage(dataset_id)
+    if species:
+        rows = [r for r in rows if r["species"].casefold() == species.casefold()]
+    return {"dataset_id": dataset_id, "taxa": len(rows), "coverage": rows[:500], "file": str(Path(data["folder"]) / "coverage.csv")}
 
 
 @mcp.tool()

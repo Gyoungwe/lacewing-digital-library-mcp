@@ -109,6 +109,13 @@ $INSTALL/.venv/bin/pip install -e "$INSTALL[maps]"
 
 **已有的旧下载结果**：用原来的 Windows 下载器下好的 `LDL_<属名>` 文件夹，可以直接接着用。下载时把 `output_parent` 指向它的**上一级**文件夹，就会按原来的 `progress.json` 和 `library_index.json` 续传，不会重复下载。
 
+**按目、科一次下载（v0.4）**：先冻结研究范围，再用 `scope_id` 下载。整个范围共用一个文献库，跨属引用的文献只下载一次：
+
+> “冻结脉翅目全部现生有效种，然后先只抓元数据，不下载 PDF。”
+> → `freeze_taxon_scope(order="Neuroptera", extant_only=True)` → `download_start(scope_id=..., metadata_only=True)`
+
+`metadata_only=True` 不需要登录，只读取每个物种的记录和三类 Citations，生成 `species_catalog.csv`（学名、作者、状态、模式、LDL 分布摘要）、`citations.csv`（物种 × 引用）和按覆盖物种数排序的 `literature_plan.json`，保存在 `~/.local/share/ldl-mcp/metadata/<scope_id>/`。可以断点续跑，返回值里有请求量和耗时估算。确认计划后，再用 `download_start(scope_id=...)` 下载全文。
+
 **联网核验是否下全**：“核验 Micromus 文献是否全部下载。”（`download_verify`）。它会重新读取 LDL 当前的引用数据，与本地文件逐项比对，生成 `完整性检查报告.txt` 和 `完整性检查明细.csv`，不会下载任何文件。
 
 ### 3. 检查、合并和检索本地文献库
@@ -171,6 +178,26 @@ $INSTALL/.venv/bin/pip install -e "$INSTALL[maps]"
 | `country_summary` | 国家或地区级别的分布摘要 | 否，只进表格 |
 | `inferred` | 推断的坐标 | 否 |
 
+### 4b. 从文献自动抽取分布（v0.4）
+
+手动记录证据适合少量物种。物种多时，可以让 MCP 先用规则批量抽取，人只复核被标记的行：
+
+> “从 Micromus 文献库里自动抽取每个种的标本地点，写进证据表 micromus。”
+> → `literature_distribution(root=".../LDL_Micromus", dataset="micromus", scope_id=...)`
+
+每个物种依次做这些事：
+
+1. **名称变体**：现行学名、原始组合、同一 TaxObjID 的所有历史组合，以及 LDL 在每条分布引用里记录的“引用时所用名称”。老文献多用旧名。
+2. **定位页面**：LDL 引用的页码会通过页眉换算成 PDF 页码，再加上文中出现任一名称变体的页面。每篇最多 `max_pages_per_document` 页。
+3. **规则抽取**：识别 Material examined、Type material、Holotype、Distribution 等段落（含德、法、西和中文标题），拆成单条记录，解析国家、地点、坐标（度分秒和十进制）、海拔、日期、采集人和模式类型。`evidence_quote` 一定是原文里的原样片段。
+4. **地名解析**（`georeference=True`）：没有印出坐标的记录，用 GeoNames 解析，范围限定在原文所写的国家内，能确定省份时也限定省份。每个国家的 GeoNames 数据第一次使用时下载一次，之后离线使用（CC BY 4.0）。结果分为 `resolved`、`probable`、`coarse`、`ambiguous`、`not_found` 五类。只有前两类会写入坐标，并自动带上 `georeference_source`（GeoNames ID 和匹配到的地名）和 `coordinate_uncertainty_m`。`ambiguous` 只列出候选地点，**不会替你选一个**。
+5. **交叉核对**：坐标是否落在原文所写的国家内（使用内置的 Natural Earth 国界）；该国是否在 LDL 接受的分布国家里。不符合的行标为 `needs_review`。
+6. **入库**：通过 `record_evidence` 写入，摘录会再次在原页面上核验。
+
+返回值统计抽取、地名解析和入库的结果。之后用 `evidence_table("micromus", review_status="needs_review")` 只看需要复核的行，再用 `review_evidence` 标为 accepted 或 rejected。
+
+单独解析一个地名：“Yunnan, Kunming, Xishan 在中国的坐标是什么？”→ `georeference_locality("Kunming, Xishan", "China", admin1="Yunnan")`
+
 ### 5. 分布数据集与地图
 
 > “用 Micromus 范围和 micromus 证据表生成分布数据集，研究区域是东亚。”
@@ -186,6 +213,11 @@ $INSTALL/.venv/bin/pip install -e "$INSTALL[maps]"
 - **底图**：默认使用内置的 Natural Earth 1:50m 陆地和国界数据（公有领域），不用联网。也可以用 `basemap="/path/to/land.geojson"` 换成你自己的底图；投稿前请确认国界画法符合期刊要求。
 - **草稿与终稿**：数据集 QC 没有通过时，图会标记为 `draft`，原因写在 manifest 里。修正数据或复核证据后重新生成即可。
 - **校验**：“检查这张图是否合格。”→ `figure_validate(figure_id)`：检查文件是否齐全、SVG 文字是否可编辑、PNG dpi、QC 和底图。
+
+**GBIF 对比图层和覆盖度（v0.4）**
+
+- `distribution_dataset(..., include_gbif=True)` 会从 GBIF 公共 API 取出现记录，作为单独的 `occurrence` 图层加进数据集。这一层**不会**混进文献证据。地图上用半透明小三角表示。`gbif_basis_of_record=["PRESERVED_SPECIMEN"]` 可以只保留馆藏标本，排除照片观察记录。没有坐标不确定度或不确定度超过 10 km 的记录会被标记。论文里请引用你在 gbif.org 用相同条件生成的下载 DOI，API 结果本身不能直接引用。
+- 每次生成数据集都会写出 `coverage.csv`。“Micromus 哪些分布国家还没有点位证据？”→ `distribution_coverage(dataset_id, species=...)`：列出每个种在 LDL 中接受和存疑的分布国家、已有模式/文献/GBIF 点位支持的国家、还没有点位证据的 LDL 国家，以及有点位但不在 LDL 国家列表里的国家（可能是新记录，也可能是错误）。
 
 地图**从不**绘制分布范围、凸包或生态位模型，也不会把国家级摘要画成点。
 
@@ -210,10 +242,11 @@ $INSTALL/.venv/bin/pip install -e "$INSTALL[maps]"
 5. 补一下失败的文献，然后联网核验是否下全。
 6. 对扫描版文献做 OCR（英文+德文）。
 7. 冻结 Micromus 现生有效种为研究范围。
-8. 检索 Holotype/Material examined，把标本地点记录到证据表 micromus，不要自己补坐标。
-9. 列出 unverified 的证据，我来复核。
-10. 生成东亚分布数据集，画 nature_like 双栏分面图，并校验。
-11. 导出研究包。
+8. 从 Micromus 文献自动抽取标本地点到证据表 micromus（没有坐标的用 GeoNames 在原文国家内解析）。
+9. 列出 needs_review 和 unverified 的证据，我来复核。
+10. 生成东亚分布数据集（加 GBIF 馆藏标本作对比层），画 nature_like 双栏分面图，并校验。
+11. 哪些 LDL 分布国家还没有点位证据？
+12. 导出研究包。
 ```
 
 ### 8. 常见问题
@@ -253,7 +286,7 @@ Then ask Codex:
 Use $lacewing-digital-library to resolve Mantispa styriaca and summarize its accepted name, original combination, type locality, distribution and references.
 ```
 
-## Literature download and research workflow (v0.3)
+## Literature download and research workflow (v0.4)
 
 The genus literature downloader is built into the MCP: `auth_start` opens a separate browser for you to log in (only LDL cookies are stored locally, mode 0600; no passwords), `download_start` runs a detached background job that survives the MCP session, and the `library_*`, evidence, distribution, map and export tools turn the downloaded PDFs into auditable research outputs. See the [Chinese tutorial](#中文使用教程) below for the full walkthrough.
 
@@ -263,6 +296,7 @@ The genus literature downloader is built into the MCP: `auth_start` opens a sepa
 | Download jobs | `download_start`, `download_status`, `download_control`, `download_verify` |
 | Local library | `library_status`, `library_verify`, `library_documents`, `library_search`, `library_page_text`, `library_ocr`, `library_merge` |
 | Research | `freeze_taxon_scope`, `list_taxon_scopes`, `literature_plan`, `record_evidence`, `evidence_table`, `review_evidence`, `distribution_dataset`, `distribution_map`, `figure_validate`, `export_research_package` |
+| Literature → distribution (v0.4) | `literature_distribution` (rule extraction + GeoNames georeferencing + country cross-checks), `georeference_locality`, `distribution_coverage`; `distribution_dataset(include_gbif=True)` adds GBIF occurrences as a separate comparison layer; `freeze_taxon_scope(order=...)` and `download_start(scope_id=..., metadata_only=True)` for order/family-wide catalogues |
 
 Data root: `~/.local/share/ldl-mcp/` (override with `LDL_MCP_HOME`). Optional extras: `[maps]` (cartopy projections), `[ocr]` (pypdfium2; also needs the `tesseract` binary).
 

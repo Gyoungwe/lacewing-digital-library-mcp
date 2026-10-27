@@ -2218,11 +2218,21 @@ def run_genus_job(
     refresh: bool = False,
     verify_only: bool = False,
     on_root: Any = None,
+    targets: list[SpeciesTarget] | None = None,
+    label: str | None = None,
 ) -> dict[str, Any]:
-    """Run one download / retry-failed / verify pass. Raises LoginExpiredError or KeyboardInterrupt."""
+    """Run one download / retry-failed / verify pass. Raises LoginExpiredError or KeyboardInterrupt.
+
+    With ``targets`` (a frozen research scope: an order, family or name list) the
+    whole scope shares one library, so a paper cited for species in different
+    genera is downloaded once. ``label`` names the library folder (LDL_<label>).
+    """
     mode_config = configure_download_mode("stable" if verify_only else download_mode)
     output_parent.mkdir(parents=True, exist_ok=True)
-    genus, detected_targets = extract_species_targets(source_url, request)
+    if targets:
+        genus, detected_targets = re.sub(r"[^A-Za-z0-9_-]+", "_", label or "scope").strip("_"), list(targets)
+    else:
+        genus, detected_targets = extract_species_targets(source_url, request)
     print(f"已识别：{genus} 属，共 {len(detected_targets)} 个物种。")
     print("范围：Taxon Citations + Distribution Citations + Image Citations；不含 Image Gallery。")
     print("模式：完整性检查（不下载）" if verify_only else f"模式：{mode_config['label']}。{mode_config['description']}")

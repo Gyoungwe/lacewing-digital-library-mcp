@@ -14,6 +14,7 @@ import unittest
 import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -158,8 +159,13 @@ class JobStateTests(WorkflowTestCase):
         job_dir.mkdir(parents=True)
         write_json_atomic(job_dir / "job.json", {"job_id": "download-test", "kind": "download", "status": "running", "pid": 999999, "params": {}})
         self.assertEqual(jobs.load("download-test")["status"], "interrupted")
+        # A live pid that is not this job's worker (pid reuse) is also reported interrupted.
         write_json_atomic(job_dir / "job.json", {"job_id": "download-test", "kind": "download", "status": "running", "pid": os.getpid(), "params": {}})
-        jobs.request_stop("download-test", "pause")
+        self.assertEqual(jobs.load("download-test")["status"], "interrupted")
+        self.assertIsNone(jobs.request_stop("download-test", "pause")["requested"])
+        with patch.object(jobs, "_is_worker", return_value=True):
+            self.assertEqual(jobs.load("download-test")["status"], "running")
+            jobs.request_stop("download-test", "pause")
         self.assertEqual(jobs.control_action("download-test"), "pause")
         with self.assertRaises(ValueError):
             jobs.job_dir("../etc")
@@ -226,7 +232,7 @@ class ResearchPipelineTests(WorkflowTestCase):
         ds = distribution.build(client, "testus", scope_id=scope["scope_id"], evidence_dataset="testus", extent=[90, 150, 10, 50])
         bases = ds["coordinate_basis_counts"]
         self.assertEqual(bases["type_specimen"], 3)
-        self.assertEqual(bases["country_summary"], 2)
+        self.assertEqual(bases["country_summary"], 3)  # alpha: China; beta: Japan + Russia (doubtful)
         self.assertEqual(ds["qc"]["status"], "needs_attention")  # the 0/0 type row
         self.assertIn("zero_zero", ds["qc"]["flag_counts"])
 
@@ -362,7 +368,7 @@ class ServerTests(unittest.TestCase):
             "resolve_taxon", "type_info", "edoc_search", "library_ocr", "library_merge",
         ):
             self.assertIn(required, names)
-        self.assertLessEqual(len(names), 45)
+        self.assertLessEqual(len(names), 50)
 
     def test_download_start_requires_login(self) -> None:
         with tempfile.TemporaryDirectory() as home:

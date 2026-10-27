@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lacewing-digital-library-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "MCP server and Codex skill for the Lacewing Digital Library / Neuropterida Species of the World"
 readme = "README.md"
 requires-python = ">=3.10"

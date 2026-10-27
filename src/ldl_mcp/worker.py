@@ -10,7 +10,8 @@ from typing import Any
 
 from . import auth, jobs
 from .client import LDLClient
-from .downloader import LoginExpiredError, resolve_source_url, run_genus_job, safe_error_message
+from .downloader import LoginExpiredError, SpeciesTarget, monograph_url_for, resolve_source_url, run_genus_job, safe_error_message
+from .research_scope import load_scope
 from .ldl_http import JobPaused, RequestsAPIContext
 from .paths import now_iso
 
@@ -29,14 +30,31 @@ def run(job_id: str) -> int:
     jobs.update(job_id, status="running", pid=os.getpid(), started_at=now_iso(), runs=int(job.get("runs", 0)) + 1, message="")
     print(f"[{now_iso()}] worker {os.getpid()} started job {job_id} ({job.get('kind')})", flush=True)
     try:
+        if job.get("kind") == "metadata":
+            from .metadata import harvest
+
+            summary = harvest(LDLClient(), params["scope_id"], should_stop=lambda: jobs.control_action(job_id), log=lambda m: print(m, flush=True))
+            jobs.update(job_id, status="completed", finished_at=now_iso(), result=summary, message="Metadata harvested.")
+            print(f"[{now_iso()}] finished: {summary['taxa_harvested']} taxa, {summary['documents_with_file']} documents", flush=True)
+            return 0
         session = auth.build_session(require_cookies=bool(params.get("require_login", True)))
         request = RequestsAPIContext(session, control=lambda: jobs.control_action(job_id))
-        source_url = job.get("source_url") or resolve_source_url(
-            genus=params.get("genus"),
-            comb_obj_id=params.get("comb_obj_id"),
-            monograph_url=params.get("monograph_url"),
-            find_comb_obj_id=find_genus_comb_obj_id,
-        )
+        targets = None
+        if params.get("scope_id"):
+            scope = load_scope(params["scope_id"])
+            targets = [
+                SpeciesTarget(t["accepted_name"], str(t["accepted_name"]).split(" ", 1)[-1], monograph_url_for(int(t["CombObjID"])))
+                for t in scope["taxa"]
+                if t.get("CombObjID")
+            ]
+            source_url = f"scope:{params['scope_id']}"
+        else:
+            source_url = job.get("source_url") or resolve_source_url(
+                genus=params.get("genus"),
+                comb_obj_id=params.get("comb_obj_id"),
+                monograph_url=params.get("monograph_url"),
+                find_comb_obj_id=find_genus_comb_obj_id,
+            )
         jobs.update(job_id, source_url=source_url)
 
         def on_root(root: Path, genus: str) -> None:
@@ -50,6 +68,8 @@ def run(job_id: str) -> int:
             refresh=bool(params.get("refresh")),
             verify_only=job.get("kind") == "verify",
             on_root=on_root,
+            targets=targets,
+            label=params.get("scope_label") or params.get("scope_id"),
         )
         needs_attention = bool(summary.get("failed_downloads")) or summary.get("passed") is False
         jobs.update(

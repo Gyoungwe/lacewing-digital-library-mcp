@@ -1,6 +1,6 @@
 # LDL 科研工作流与分布图设计
 
-状态：v0.3 已实现第 1–5 阶段的最小闭环（见第 11 节）。
+状态：v0.3 已实现第 1–5 阶段的最小闭环；v0.4 增加文献自动抽取分布、GeoNames 地名解析和 GBIF 对比层（见第 11 节）。
 
 日期：2026-10-27
 
@@ -287,7 +287,21 @@ export_research_package
 - 地理参照：`georeferenced` 行必须带 `georeference_source` 和 `coordinate_uncertainty_m`，否则在证据表中报告问题、在数据集 QC 中标记 `georeference_incomplete`，并且默认不上地图。MCP 不内置地名库，由 agent 或用户提供有出处的坐标。
 - 安装：`install.sh` 支持 `LDL_MCP_BRANCH`；代码安装目录改用 `LDL_MCP_INSTALL_DIR`，与数据目录 `LDL_MCP_HOME` 不再冲突。README 增加中文使用教程。
 
+### 第三轮（v0.4）
+
+修订第二轮“MCP 不内置地名库”的决定：手工为大量物种地理参照不现实，因此加入受约束的离线地名解析，但规则仍是不猜测。
+
+- 范围：`freeze_taxon_scope` 支持 `order`。`download_start(scope_id=...)` 为整个范围建一个共享文献库；`metadata_only=True` 不需登录，只抓物种记录和三类 Citations，生成 `species_catalog.csv`、`citations.csv` 和 `literature_plan.json`（`metadata.py`，可断点续跑，作为后台任务运行）。
+- 规则抽取（`extract.py`）：识别材料/模式/分布段落（多语种标题），拆分记录，解析国家、地点、坐标、海拔、日期、采集人和模式类型；`evidence_quote` 必须是页面原文的子串。LDL 引用的印刷页码通过页眉换算为 PDF 页码。
+- 地名解析（`gazetteer.py`）：GeoNames 国家级数据（CC BY 4.0），按国家首次下载后建 SQLite 索引。只在原文所写国家内解析，能确定省份时再限定省份；结果分 `resolved/probable/coarse/ambiguous/not_found`，只有前两类写坐标，并自动填写 `georeference_source` 和 `coordinate_uncertainty_m`；`ambiguous` 只返回候选。
+- 交叉核对（`geo.py`）：内置 Natural Earth admin-0 增加名称和 ISO 字段，用于国家名规范化和点是否落在所述国家（海岸容差 15 km）；点所在国家不在 LDL 接受的分布国家中时标为 `needs_review`。
+- 流水线（`lit_distribution.py`）与工具：`literature_distribution`、`georeference_locality`、`distribution_coverage`。
+- GBIF（`gbif.py`）：`distribution_dataset(include_gbif=True)` 把出现记录作为独立 `occurrence` 图层，不并入文献证据；缓存 30 天；缺少不确定度或超过 10 km 的记录被标记。发表时应引用 gbif.org 生成的下载 DOI。
+- 后台任务：判断 worker 是否存活时同时核对进程命令行，避免重启后 PID 被复用导致误判为运行中。
+- 工具总数 48（上限 50）。
+
 ### 尚未完成
 
 - 真实登录与 EDoc 下载未在沙箱中端到端验证，需要在本机执行一次 `auth_start` → `download_start`。
-- 内置地名库 / 自动地理参照（有意不做自动化，见上）。
+- GeoNames 下载和 GBIF API 未在沙箱中联网验证，需要在本机对一个小属跑一次 `literature_distribution` 和 `distribution_dataset(include_gbif=True)`。
+- 规则抽取对排版混乱的老文献和 OCR 文本召回有限，未识别的段落仍需 agent 阅读页面后用 `record_evidence` 补录。

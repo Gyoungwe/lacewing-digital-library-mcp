@@ -21,7 +21,7 @@ from .paths import jobs_dir, now_iso, read_json, write_json_atomic
 
 ACTIVE = {"starting", "running"}
 RESUMABLE = {"paused", "interrupted", "auth_required", "failed", "attention_required", "cancelled"}
-KINDS = {"download", "verify"}
+KINDS = {"download", "verify", "metadata"}
 
 
 def job_dir(job_id: str) -> Path:
@@ -48,10 +48,25 @@ def _pid_alive(pid: Any) -> bool:
         return False
 
 
+def _is_worker(pid: Any, job_id: str) -> bool:
+    """The pid is alive *and* is this job's worker (guards against pid reuse after a reboot)."""
+    if not _pid_alive(pid):
+        return False
+    command = ""
+    try:
+        command = Path(f"/proc/{int(pid)}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+    except OSError:
+        try:
+            command = subprocess.run(["ps", "-p", str(int(pid)), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            return True  # cannot inspect; fall back to the liveness check
+    return "ldl_mcp.worker" in command and job_id in command
+
+
 def load(job_id: str) -> dict[str, Any]:
     path = job_dir(job_id)
     job = read_json(path / "job.json", {}) or {}
-    if job.get("status") in ACTIVE and not _pid_alive(job.get("pid")):
+    if job.get("status") in ACTIVE and not _is_worker(job.get("pid"), job_id):
         job["status"] = "interrupted"
         job["message"] = "The worker process is no longer running; resume to continue from the last checkpoint."
     return job
@@ -101,7 +116,7 @@ def _active_for_root(output_parent: str, genus_key: str) -> dict[str, Any] | Non
 def start(kind: str, params: dict[str, Any]) -> dict[str, Any]:
     if kind not in KINDS:
         raise ValueError(f"Unknown job kind {kind!r}")
-    genus_key = str(params.get("genus") or params.get("comb_obj_id") or params.get("monograph_url") or "").casefold()
+    genus_key = f"{kind}:" + str(params.get("scope_id") or params.get("genus") or params.get("comb_obj_id") or params.get("monograph_url") or "").casefold()
     busy = _active_for_root(str(params.get("output_parent")), genus_key)
     if busy:
         raise RuntimeError(f"Job {busy['job_id']} is already running for this genus and folder.")

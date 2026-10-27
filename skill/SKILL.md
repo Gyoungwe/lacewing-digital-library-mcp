@@ -56,12 +56,15 @@ If the MCP server is unavailable, fall back to the bundled Python client. Keep r
 
 Do not infer missing taxonomic facts from field names alone. If a requested datum is absent or ambiguous, say so and preserve the raw LDL value where relevant.
 
-## Literature download and evidence workflow (MCP v0.3)
+## Literature download and evidence workflow (MCP v0.4)
 
 - Login: call `auth_start`; the user logs in to LDL in a separate browser window and clicks the in-page save button. Never ask the user for a password. Check with `auth_status`.
 - Download: `download_start(genus=...)` returns a `job_id` immediately; poll `download_status`. On `auth_required`, ask the user to log in again, then `download_control(job_id, "resume")`. On `attention_required`, use `download_control(job_id, "retry_failed")`.
 - Read: `library_search` → `library_page_text`. If target documents appear in `documents_without_text_layer`, run `library_ocr` first and treat OCR hits as needing visual confirmation.
 - Evidence: record only what the page says, with `sha256`, `pdf_page` and a short verbatim `evidence_quote` per row, via `record_evidence`. Do not invent coordinates. If you georeference a locality, use `coordinate_basis="georeferenced"` and supply `georeference_source` and `coordinate_uncertainty_m`. Never set `accepted`; human decisions go through `review_evidence`.
+- Large scopes: `freeze_taxon_scope(order=...|family=...)`, then `download_start(scope_id=..., metadata_only=True)` (no login) to get `species_catalog.csv`, `citations.csv` and a ranked literature plan before downloading; `download_start(scope_id=...)` downloads one shared library for the whole scope.
+- Automated extraction: `literature_distribution(root, dataset, scope_id=...)` extracts material/type records from LDL-cited pages and pages naming any name variant, georeferences only within the stated country/province via GeoNames, and flags rows as `needs_review`. Review them with `evidence_table(dataset, review_status="needs_review")`; never pick a candidate for an `ambiguous` georeference yourself. `georeference_locality` resolves a single locality.
+- Comparison: `distribution_dataset(include_gbif=True)` adds GBIF occurrences as a separate `occurrence` layer, never as literature evidence; tell the user to cite a GBIF download DOI. `distribution_coverage` lists LDL countries still lacking point evidence and point countries absent from LDL.
 - Outputs: `freeze_taxon_scope` → `distribution_dataset` → `distribution_map` → `figure_validate` → `export_research_package`. Report a map's `draft_reasons` instead of presenting a draft as final.
 
 ## Round-one lessons
