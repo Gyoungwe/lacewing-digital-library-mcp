@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lacewing-digital-library-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server and Codex skill for the Lacewing Digital Library / Neuropterida Species of the World"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,6 +14,8 @@ dependencies = [
   "mcp>=1.0.0,<2",
   "requests>=2.31,<3",
   "pypdf>=5,<7",
+  "playwright>=1.45,<2",
+  "matplotlib>=3.7,<4",
 ]
 keywords = ["MCP", "Neuroptera", "Neuropterida", "taxonomy", "lacewing", "LDL"]
 classifiers = [
@@ -21,8 +23,12 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 
+[project.optional-dependencies]
+maps = ["cartopy>=0.22"]
+
 [project.scripts]
 ldl-mcp = "ldl_mcp.server:main"
+ldl-mcp-worker = "ldl_mcp.worker:main"
 
 [project.urls]
 Homepage = "https://github.com/Gyoungwe/lacewing-digital-library-mcp"
@@ -30,3 +36,6 @@ Repository = "https://github.com/Gyoungwe/lacewing-digital-library-mcp"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+ldl_mcp = ["data/*.gz", "data/*.md"]

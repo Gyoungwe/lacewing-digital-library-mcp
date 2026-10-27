@@ -52,6 +52,22 @@ Use $lacewing-digital-library to resolve Mantispa styriaca and summarize its acc
 | `raw_public_endpoint` | Advanced read-only access to an allowlisted LDL endpoint. |
 | `health_check` | Can the server reach LDL, and what dataset/version info is visible? |
 
+
+## Literature download and research workflow (v0.3)
+
+The genus literature downloader is now built into the MCP. Typical flow:
+
+1. `auth_start` opens a **separate** Chrome/Edge window (isolated profile, never your everyday browser). Log in to LDL and click the purple **“我已登录，保存会话 / Save LDL session”** button. Only `lacewing.tamu.edu` cookies are saved to `~/.local/share/ldl-mcp/auth/ldl_cookies.json` (mode 0600). No password is ever passed to or stored by the MCP. `auth_status` shows cookie names and expiry, never values.
+2. `download_start(genus="Micromus")` starts a **detached background job** (it keeps running if Codex closes). Modes: `fast`, `stable`, `retry-failed`. Output is `LDL_<Genus>/`, the same layout as the original downloader, so existing libraries resume without re-downloading.
+3. `download_status` / `download_control(action=pause|cancel|resume|retry_failed)` / `download_verify` (online integrity check against LDL's current citations).
+4. `library_status`, `library_verify`, `library_documents`, `library_search` (full-text, page + snippet + BibObjID/EDocID), `library_page_text`.
+5. `freeze_taxon_scope` → `literature_plan` → `record_evidence` (each quote is checked against the cited PDF page; unfound quotes stay `unverified`) → `review_evidence`.
+6. `distribution_dataset` (LDL type coordinates + LDL distribution citations + literature evidence, with coordinate QC) → `distribution_map` (`nature_like` or `plain_report`; SVG/PDF/PNG + manifest + caption) → `figure_validate` → `export_research_package` (zip with tables, evidence, BibTeX, figures, file hashes).
+
+Maps use a bundled Natural Earth 1:50m land/borders layer by default (public domain). `basemap="cartopy"` and non-plate-carrée projections need `pip install 'lacewing-digital-library-mcp[maps]'`. Country-level summaries and inferred coordinates are never drawn as points, and a map stays `draft` until dataset QC passes.
+
+Data root: `~/.local/share/ldl-mcp/` (override with `LDL_MCP_HOME`).
+
 ## Examples
 
 Resolve a taxon:
@@ -110,7 +126,7 @@ LDL search results can include current combinations, original combinations, hist
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e .
-.venv/bin/python -m unittest discover -s tests -p 'test_*.py'
+PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -p 'test_*.py'   # offline, includes a simulated genus download
 .venv/bin/python tests/live_smoke.py
 .venv/bin/python tests/mcp_smoke.py
 ```

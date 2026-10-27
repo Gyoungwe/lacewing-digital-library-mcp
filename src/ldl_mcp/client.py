@@ -267,8 +267,15 @@ class LDLClient:
 
     def credential_status(self) -> dict[str, Any]:
         """Report whether optional contributor credentials are discoverable without exposing secrets."""
+        from .auth import cookie_summary
+
         user, password, source = self._credential_pair()
-        return {"configured": bool(user and password), "source": source, "username_configured": bool(user)}
+        return {
+            "configured": bool(user and password),
+            "source": source,
+            "username_configured": bool(user),
+            "browser_session": cookie_summary(),
+        }
 
     def _credential_pair(self) -> tuple[str | None, str | None, str]:
         user = os.getenv("LDL_USERNAME")
@@ -310,15 +317,19 @@ class LDLClient:
         return bool(response.ok)
 
     def fetch_edoc_pdf(self, edoc_id: int) -> bytes:
-        """Fetch an LDL EDoc PDF with optional contributor auth; never exposes credentials."""
-        if not self.authenticate_contributor():
-            raise PermissionError("LDL contributor credentials are not configured in env/keychain")
+        """Fetch an LDL EDoc PDF using the saved browser session, else env/keychain credentials."""
+        from .auth import build_session, load_cookies
+
+        if load_cookies():
+            session = build_session()
+        elif self.authenticate_contributor():
+            session = self.session
+        else:
+            raise PermissionError("No LDL login: run auth_start (browser login) or configure env/keychain credentials")
         self._throttle()
-        response = self.session.get(
-            f"{self.SITE_URL}/edoc/{int(edoc_id)}", timeout=self.timeout, allow_redirects=True
-        )
+        response = session.get(f"{self.SITE_URL}/edoc/{int(edoc_id)}", timeout=max(self.timeout, 120), allow_redirects=True)
         self._last_request = time.time()
         response.raise_for_status()
         if not response.content.startswith(b"%PDF"):
-            raise PermissionError("LDL EDoc did not return a PDF; contributor access may be unavailable for this record")
+            raise PermissionError("LDL EDoc did not return a PDF; the session may have expired (run auth_start) or access is unavailable")
         return response.content

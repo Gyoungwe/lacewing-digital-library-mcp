@@ -21,6 +21,10 @@ fi
 python3 -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/python" -m pip install --upgrade pip >/dev/null
 "$INSTALL_DIR/.venv/bin/python" -m pip install -e "$INSTALL_DIR" >/dev/null
+# Login window uses installed Chrome/Edge first; fetch Playwright Chromium only as a fallback.
+if [ ! -d "/Applications/Google Chrome.app" ] && ! command -v google-chrome >/dev/null 2>&1 && ! command -v microsoft-edge >/dev/null 2>&1; then
+  "$INSTALL_DIR/.venv/bin/python" -m playwright install chromium >/dev/null || echo "Warning: Playwright Chromium install failed; auth_start needs Chrome or Edge." >&2
+fi
 
 rm -rf "$SKILL_DIR"
 cp -R "$INSTALL_DIR/skill" "$SKILL_DIR"

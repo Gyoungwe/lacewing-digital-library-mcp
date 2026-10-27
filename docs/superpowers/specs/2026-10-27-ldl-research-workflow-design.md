@@ -1,6 +1,6 @@
 # LDL 科研工作流与分布图设计
 
-状态：已确认总体方向，暂不进入实现。
+状态：v0.3 已实现第 1–5 阶段的最小闭环（见第 11 节）。
 
 日期：2026-10-27
 
@@ -262,3 +262,27 @@ export_research_package
 5. 增加总结、冲突比较和多格式导出。
 
 本设计不包含实现代码、下载器迁移代码或地图底图文件。进入实施前，需要确定本地数据目录默认位置、是否启用 OCR，以及第一批支持的地图区域和导出格式。
+
+## 11. 实施记录与修订（2026-10-27，v0.3）
+
+### 已落地
+
+- 下载器迁移：`downloader.py` 保留原脚本的三类 Citations 解析、r#/EDoc/SHA-256 三层去重、Range 分段、断点续传、补失败和完整性报告，原离线自检原样通过。浏览器只负责登录；下载通过 `ldl_http.RequestsAPIContext` 携带已保存的 LDL Cookie 发起请求。
+- 授权：`auth_start` 启动独立 profile 的浏览器，用户点击页内按钮后只保存 `lacewing.tamu.edu` Cookie（0600）。不接受密码，返回值不含 Cookie 值。
+- 后台任务：worker 以独立进程运行（`start_new_session`），不依附 stdio MCP 会话。状态、控制和日志写在 `jobs/<job_id>/`；进程消失时报告 `interrupted`，可以 resume。暂停/取消在请求边界生效，不会误记为下载失败。
+- 文献库、全文检索、范围快照、文献计划、证据表、分布数据集与 QC、`nature_like` 地图、figure 校验和导出包均已实现，并有离线测试。
+
+### 相对原设计的修订
+
+1. **分工**：证据抽取由 agent 读取页面后提交，MCP 负责校验（摘录必须出现在所引页码）和入库；`accepted/rejected` 只能经 `review_evidence` 人工设定。`summarize_literature` 和 `compare_taxonomic_claims` 不做成工具，由 agent 基于证据表完成。
+2. **坐标基础**：新增 `georeferenced`，与 `inferred` 区分。`country_summary` 和 `inferred` 在 `distribution_map` 中被拒绝绘制。
+3. **工具合并**：暂停、取消、恢复、补失败合并为 `download_control`；`jobs_list` 并入 `download_status`；`library_find` 并入 `library_status`。共 43 个工具，其中 21 个为旧版兼容工具。
+4. **底图**：内置 Natural Earth 1:50m 陆地和国界（约 0.9 MB gzip，公有领域），cartopy 为可选。国界采用 Natural Earth 的实际控制线画法，投稿前需按期刊政策核对。
+5. **待定项的决定**：数据目录 `~/.local/share/ldl-mcp/`（`LDL_MCP_HOME` 覆盖）；OCR 暂不启用，无文本层的 PDF 在检索结果中单列；导出格式 SVG/PDF/PNG + CSV/TSV/Markdown + BibTeX。
+
+### 尚未完成
+
+- OCR 层与 `ocr` 标记。
+- 地名解析（`georeferenced` 目前只能由 agent 填写并说明来源）。
+- 原下载器中 Windows 专用的硬链接跨属合并（`merge_genus_libraries.py`）未迁移；MCP 可直接读取其生成的 `global_library_index.json`。
+- 真实登录与 EDoc 下载未在沙箱中端到端验证，需要在本机执行一次 `auth_start` → `download_start`。
