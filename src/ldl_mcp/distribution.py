@@ -22,7 +22,7 @@ from .research_scope import load_scope
 ROW_FIELDS = (
     "row_id", "species", "accepted_name", "input_name", "TaxObjID", "CombObjID",
     "locality_original", "locality_normalized", "country",
-    "latitude", "longitude", "coordinate_basis", "coordinate_uncertainty_m", "type_status",
+    "latitude", "longitude", "coordinate_basis", "coordinate_uncertainty_m", "georeference_source", "type_status",
     "collector", "collection_date", "source_citation",
     "BibObjID", "EDocID", "sha256", "pdf_page", "evidence_quote",
     "evidence_level", "confidence", "review_status", "source", "qc_flags",
@@ -70,6 +70,10 @@ def qc(rows: list[dict[str, Any]], extent: list[float] | None = None) -> dict[st
                 seen[key] = row["row_id"]
         if row.get("coordinate_basis") == "inferred":
             row_flags.append("inferred_coordinate")
+        if row.get("coordinate_basis") == "georeferenced" and (
+            not row.get("georeference_source") or row.get("coordinate_uncertainty_m") in (None, "")
+        ):
+            row_flags.append("georeference_incomplete")
         if row.get("review_status") in {"unverified", "rejected"} and row.get("source") == "literature_evidence":
             row_flags.append(f"evidence_{row['review_status']}")
         row["qc_flags"] = ";".join(row_flags)

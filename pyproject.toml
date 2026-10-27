@@ -25,6 +25,7 @@ classifiers = [
 
 [project.optional-dependencies]
 maps = ["cartopy>=0.22"]
+ocr = ["pypdfium2>=4"]
 
 [project.scripts]
 ldl-mcp = "ldl_mcp.server:main"

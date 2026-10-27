@@ -30,10 +30,10 @@ COORDINATE_BASES = {"type_specimen", "literature_locality", "georeferenced", "oc
 FIELDS = (
     "evidence_id", "dataset", "species", "accepted_name", "input_name",
     "locality_original", "locality_normalized", "country",
-    "latitude", "longitude", "coordinate_basis", "coordinate_uncertainty_m", "type_status",
+    "latitude", "longitude", "coordinate_basis", "coordinate_uncertainty_m", "georeference_source", "type_status",
     "collector", "collection_date", "source_citation",
     "BibObjID", "EDocID", "sha256", "pdf_page", "evidence_quote",
-    "evidence_level", "confidence", "review_status", "quote_check", "notes", "recorded_at",
+    "evidence_level", "confidence", "review_status", "quote_check", "quote_text_source", "notes", "recorded_at",
 )
 
 
@@ -88,6 +88,14 @@ def record(dataset: str, rows: list[dict[str, Any]], library_roots: list[str]) -
             if basis not in COORDINATE_BASES:
                 issues.append(f"unknown coordinate_basis {basis!r}")
             row["coordinate_basis"] = basis
+            if basis == "georeferenced":
+                # Coordinates the source did not print: provenance and uncertainty are mandatory.
+                if not str(row.get("georeference_source") or "").strip():
+                    issues.append("georeferenced coordinates need georeference_source (gazetteer/tool + version or URL)")
+                if _number(row.get("coordinate_uncertainty_m")) is None:
+                    issues.append("georeferenced coordinates need coordinate_uncertainty_m")
+            if basis == "inferred":
+                issues.append("inferred coordinates are stored but never mapped as points")
             level = row.get("evidence_level") or "primary_material"
             if level not in EVIDENCE_LEVELS:
                 issues.append(f"unknown evidence_level {level!r}")
@@ -105,6 +113,9 @@ def record(dataset: str, rows: list[dict[str, Any]], library_roots: list[str]) -
                         quote_check = "page_out_of_range"
                     else:
                         quote_check = check_quote(str(row.get("evidence_quote") or ""), texts["pages"][page_no - 1])
+                        row["quote_text_source"] = texts["page_sources"][page_no - 1]
+                        if row["quote_text_source"] == "ocr" and quote_check in {"exact", "normalized"}:
+                            issues.append("quote matched OCR text; confirm against the page image")
                     row.setdefault("BibObjID", "; ".join(found[1].references))
                     row.setdefault("EDocID", "; ".join(found[1].edoc_ids))
             row["quote_check"] = quote_check

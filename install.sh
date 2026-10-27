@@ -2,7 +2,8 @@
 set -euo pipefail
 
 REPO_URL="${LDL_MCP_REPO:-https://github.com/Gyoungwe/lacewing-digital-library-mcp.git}"
-INSTALL_DIR="${LDL_MCP_HOME:-$HOME/.local/share/lacewing-digital-library-mcp}"
+BRANCH="${LDL_MCP_BRANCH:-}"
+INSTALL_DIR="${LDL_MCP_INSTALL_DIR:-$HOME/.local/share/lacewing-digital-library-mcp}"
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 SKILL_DIR="$CODEX_HOME_DIR/skills/lacewing-digital-library"
 
@@ -12,10 +13,15 @@ command -v codex >/dev/null || { echo "codex CLI is required" >&2; exit 1; }
 
 mkdir -p "$(dirname "$INSTALL_DIR")" "$CODEX_HOME_DIR/skills"
 if [ -d "$INSTALL_DIR/.git" ]; then
-  git -C "$INSTALL_DIR" pull --ff-only
+  if [ -n "$BRANCH" ]; then
+    git -C "$INSTALL_DIR" fetch origin "$BRANCH"
+    git -C "$INSTALL_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
+  else
+    git -C "$INSTALL_DIR" pull --ff-only
+  fi
 else
   rm -rf "$INSTALL_DIR"
-  git clone "$REPO_URL" "$INSTALL_DIR"
+  git clone ${BRANCH:+--branch "$BRANCH"} "$REPO_URL" "$INSTALL_DIR"
 fi
 
 python3 -m venv "$INSTALL_DIR/.venv"

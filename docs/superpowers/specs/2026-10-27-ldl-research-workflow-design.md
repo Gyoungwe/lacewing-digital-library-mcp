@@ -280,9 +280,14 @@ export_research_package
 4. **底图**：内置 Natural Earth 1:50m 陆地和国界（约 0.9 MB gzip，公有领域），cartopy 为可选。国界采用 Natural Earth 的实际控制线画法，投稿前需按期刊政策核对。
 5. **待定项的决定**：数据目录 `~/.local/share/ldl-mcp/`（`LDL_MCP_HOME` 覆盖）；OCR 暂不启用，无文本层的 PDF 在检索结果中单列；导出格式 SVG/PDF/PNG + CSV/TSV/Markdown + BibTeX。
 
+### 第二轮补全（同日）
+
+- OCR：`library_ocr` 用本机 Tesseract（经 pypdfium2 渲染）只补没有文本层的页面，结果单独缓存；检索命中和证据核验均标注 `text_source/quote_text_source = ocr`。
+- 跨属合并：`library_merge` 跨平台、非破坏性，先 dry-run，执行时复制或硬链接并逐个 SHA-256 校验，不删除源文件；生成的 `global_library_index.json` 与原管理器字段兼容。
+- 地理参照：`georeferenced` 行必须带 `georeference_source` 和 `coordinate_uncertainty_m`，否则在证据表中报告问题、在数据集 QC 中标记 `georeference_incomplete`，并且默认不上地图。MCP 不内置地名库，由 agent 或用户提供有出处的坐标。
+- 安装：`install.sh` 支持 `LDL_MCP_BRANCH`；代码安装目录改用 `LDL_MCP_INSTALL_DIR`，与数据目录 `LDL_MCP_HOME` 不再冲突。README 增加中文使用教程。
+
 ### 尚未完成
 
-- OCR 层与 `ocr` 标记。
-- 地名解析（`georeferenced` 目前只能由 agent 填写并说明来源）。
-- 原下载器中 Windows 专用的硬链接跨属合并（`merge_genus_libraries.py`）未迁移；MCP 可直接读取其生成的 `global_library_index.json`。
 - 真实登录与 EDoc 下载未在沙箱中端到端验证，需要在本机执行一次 `auth_start` → `download_start`。
+- 内置地名库 / 自动地理参照（有意不做自动化，见上）。

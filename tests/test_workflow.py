@@ -269,6 +269,87 @@ class ResearchPipelineTests(WorkflowTestCase):
             self.assertIn("@article{ldl10", archive.read("references.bib").decode())
 
 
+class OcrMergeGeoreferenceTests(WorkflowTestCase):
+    def _scanned_pdf(self) -> bytes:
+        from PIL import Image, ImageDraw, ImageFont
+
+        image = Image.new("L", (1700, 500), 255)
+        draw = ImageDraw.Draw(image)
+        font = None
+        for candidate in ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/Library/Fonts/Arial.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf"):
+            if Path(candidate).exists():
+                font = ImageFont.truetype(candidate, 48)
+                break
+        if font is None:
+            self.skipTest("no TrueType font for the OCR fixture")
+        draw.text((60, 80), "Material examined. Holotype female,", fill=0, font=font)
+        draw.text((60, 180), "JAPAN: Honshu, Tokyo, leg. Sato.", fill=0, font=font)
+        out = io.BytesIO()
+        image.convert("RGB").save(out, format="PDF", resolution=200)
+        return out.getvalue()
+
+    def test_ocr_fills_scanned_pages_and_is_labelled(self) -> None:
+        from ldl_mcp import evidence, library
+
+        if not library.ocr_available()["available"]:
+            self.skipTest("tesseract/pypdfium2 not installed")
+        fake = FakeLDL()
+        fake.edocs[101] = self._scanned_pdf()
+        root = self.run_job(fake)["root"]
+        before = library.search(root, ["Holotype female"])
+        self.assertEqual(before["hits"], [])
+        self.assertEqual(len(before["documents_without_text_layer"]), 1)
+        result = library.ocr_library(root, lang="eng")
+        self.assertEqual(result["documents_ocred"], 1)
+        self.assertEqual(result["results"][0]["pages_from_ocr"], 1)
+        after = library.search(root, ["Holotype female"])
+        self.assertEqual(len(after["hits"]), 1)
+        self.assertEqual(after["hits"][0]["text_source"], "ocr")
+        hit = after["hits"][0]
+        stored = evidence.record("ocr", [{
+            "species": "Testus beta", "locality_original": "JAPAN: Honshu, Tokyo",
+            "sha256": hit["sha256"], "pdf_page": 1, "evidence_quote": "Holotype female",
+        }], [root])
+        self.assertEqual(stored["rows"][0]["quote_text_source"], "ocr")
+        self.assertTrue(any("OCR" in "; ".join(p["issues"]) for p in stored["problems"]))
+
+    def test_merge_is_non_destructive_and_readable(self) -> None:
+        from ldl_mcp import downloader, library, merge
+
+        parent = Path(self.tmp.name) / "many"
+        for sub in ("a", "b"):
+            with redirect_stdout(io.StringIO()):
+                downloader.run_genus_job(self.request_context(FakeLDL()), downloader.monograph_url_for(1), parent / sub)
+        before = sorted(str(p) for p in parent.rglob("*") if p.is_file())
+        plan = merge.merge_libraries(parent)
+        self.assertTrue(plan["dry_run"])
+        self.assertEqual((plan["unique_documents"], plan["source_files"]), (2, 4))
+        self.assertFalse((parent / merge.DESTINATION_NAME).exists())
+        done = merge.merge_libraries(parent, dry_run=False, mode="hardlink")
+        self.assertEqual(done["merged_documents"], 2)
+        for path in before:
+            self.assertTrue(Path(path).exists(), "sources must never be deleted")
+        unified = library.open_library(parent / merge.DESTINATION_NAME)
+        self.assertEqual(unified.layout, "unified")
+        self.assertTrue(library.verify(unified.root, full_hash=True)["ok"])
+        self.assertEqual(len(library.search(unified.root, ["Kunming"])["hits"]), 1)
+        again = merge.merge_libraries(parent, dry_run=False)
+        self.assertEqual(again["placed"]["reused"], 2)
+
+    def test_georeferenced_rows_need_provenance(self) -> None:
+        from ldl_mcp import evidence
+
+        stored = evidence.record("geo", [
+            {"species": "Testus alpha", "locality_original": "Kunming", "latitude": 25.0, "longitude": 102.7, "coordinate_basis": "georeferenced"},
+            {"species": "Testus alpha", "locality_original": "Dali", "latitude": 25.6, "longitude": 100.2, "coordinate_basis": "georeferenced",
+             "georeference_source": "GeoNames 2026-10 id 1805753", "coordinate_uncertainty_m": 5000},
+        ], [])
+        issues = {p["row"]: "; ".join(p["issues"]) for p in stored["problems"]}
+        self.assertIn("georeference_source", issues[1])
+        self.assertIn("coordinate_uncertainty_m", issues[1])
+        self.assertNotIn(2, issues)
+
+
 class ServerTests(unittest.TestCase):
     def test_tool_inventory(self) -> None:
         from ldl_mcp import server
@@ -278,7 +359,7 @@ class ServerTests(unittest.TestCase):
             "auth_start", "auth_status", "download_start", "download_status", "download_control", "download_verify",
             "library_status", "library_search", "library_page_text", "freeze_taxon_scope", "literature_plan",
             "record_evidence", "distribution_dataset", "distribution_map", "figure_validate", "export_research_package",
-            "resolve_taxon", "type_info", "edoc_search",
+            "resolve_taxon", "type_info", "edoc_search", "library_ocr", "library_merge",
         ):
             self.assertIn(required, names)
         self.assertLessEqual(len(names), 45)

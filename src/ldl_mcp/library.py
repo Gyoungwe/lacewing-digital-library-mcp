@@ -208,8 +208,11 @@ def _flat(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
-def page_texts(doc: Document) -> dict[str, Any]:
-    """Return cached per-page text for a document; extracts with pypdf on first use."""
+MIN_PAGE_CHARS = 20
+
+
+def _text_layer(doc: Document) -> dict[str, Any]:
+    """Return cached per-page text-layer text; extracts with pypdf on first use."""
     cache = subdir("text_cache") / f"{doc.sha256}.json"
     cached = read_json(cache, None)
     if isinstance(cached, dict) and cached.get("version") == TEXT_CACHE_VERSION:
@@ -241,13 +244,156 @@ def page_texts(doc: Document) -> dict[str, Any]:
         "method": method,
         "ocr": False,
         "page_count": len(pages),
-        "empty_pages": sum(1 for p in pages if len(p) < 20),
+        "empty_pages": sum(1 for p in pages if len(p) < MIN_PAGE_CHARS),
         "error": error,
         "extracted_at": now_iso(),
         "pages": pages,
     }
     write_json_atomic(cache, value)
     return value
+
+
+def _ocr_cache(doc: Document) -> Path:
+    return subdir("text_cache") / f"{doc.sha256}.ocr.json"
+
+
+def page_texts(doc: Document) -> dict[str, Any]:
+    """Per-page text: the PDF text layer, with OCR text filling pages that have none.
+
+    ``page_sources`` records ``text_layer`` / ``ocr`` / ``empty`` for every page so
+    OCR output is never confused with the document's own text.
+    """
+    value = dict(_text_layer(doc))
+    pages = list(value["pages"])
+    sources = ["text_layer" if len(p) >= MIN_PAGE_CHARS else "empty" for p in pages]
+    ocr = read_json(_ocr_cache(doc), None)
+    if isinstance(ocr, dict):
+        for index, text in enumerate(ocr.get("pages", [])):
+            if index < len(pages) and sources[index] == "empty" and len(text or "") >= MIN_PAGE_CHARS:
+                pages[index] = text
+                sources[index] = "ocr"
+        value["ocr_engine"] = ocr.get("engine")
+    value["pages"] = pages
+    value["page_sources"] = sources
+    value["ocr"] = "ocr" in sources
+    value["empty_pages"] = sources.count("empty")
+    return value
+
+
+def ocr_available() -> dict[str, Any]:
+    import shutil
+
+    tesseract = shutil.which("tesseract")
+    try:
+        import pypdfium2  # noqa: F401
+
+        renderer = True
+    except ImportError:
+        renderer = False
+    languages: list[str] = []
+    if tesseract:
+        import subprocess
+
+        try:
+            out = subprocess.run([tesseract, "--list-langs"], capture_output=True, text=True, timeout=20).stdout
+            languages = [line.strip() for line in out.splitlines()[1:] if line.strip()]
+        except Exception:
+            pass
+    return {
+        "available": bool(tesseract and renderer),
+        "tesseract": tesseract,
+        "pdf_renderer_pypdfium2": renderer,
+        "languages": languages,
+        "install_hint": "brew install tesseract tesseract-lang && pip install 'lacewing-digital-library-mcp[ocr]'",
+    }
+
+
+def ocr_document(doc: Document, lang: str = "eng", dpi: int = 300, force: bool = False) -> dict[str, Any]:
+    """OCR the pages of one PDF that lack a text layer; results cached separately and marked 'ocr'."""
+    import subprocess
+    import tempfile
+
+    status = ocr_available()
+    if not status["available"]:
+        raise RuntimeError("OCR needs the tesseract binary and pypdfium2. " + status["install_hint"])
+    if not re.fullmatch(r"[A-Za-z_+]{3,60}", lang):
+        raise ValueError("lang must look like eng, deu, fra, chi_sim or eng+deu")
+    layer = _text_layer(doc)
+    existing = read_json(_ocr_cache(doc), None) if not force else None
+    pages: list[str] = list(existing.get("pages", [])) if isinstance(existing, dict) and existing.get("lang") == lang else []
+    pages += [""] * (layer["page_count"] - len(pages))
+    import pypdfium2 as pdfium
+
+    pdf = pdfium.PdfDocument(str(doc.path))
+    done = 0
+    try:
+        with tempfile.TemporaryDirectory(prefix="ldl_ocr_") as tmp:
+            for index, text in enumerate(layer["pages"]):
+                if len(text) >= MIN_PAGE_CHARS or len(pages[index]) >= MIN_PAGE_CHARS:
+                    continue
+                image = pdf[index].render(scale=dpi / 72).to_pil()
+                png = Path(tmp) / f"p{index + 1}.png"
+                image.save(png)
+                proc = subprocess.run(
+                    [status["tesseract"], str(png), "stdout", "-l", lang],
+                    capture_output=True, text=True, timeout=300,
+                )
+                pages[index] = _flat(proc.stdout)
+                done += 1
+    finally:
+        pdf.close()
+    value = {
+        "sha256": doc.sha256,
+        "engine": f"tesseract ({lang}, {dpi} dpi)",
+        "lang": lang,
+        "ocr_at": now_iso(),
+        "pages": pages,
+    }
+    write_json_atomic(_ocr_cache(doc), value)
+    merged = page_texts(doc)
+    return {
+        "sha256": doc.sha256,
+        "pages_ocred_now": done,
+        "page_count": merged["page_count"],
+        "pages_from_ocr": merged["page_sources"].count("ocr"),
+        "pages_still_empty": merged["empty_pages"],
+    }
+
+
+def ocr_library(
+    root: str | Path,
+    sha256: str | None = None,
+    species: str | None = None,
+    lang: str = "eng",
+    max_documents: int = 10,
+) -> dict[str, Any]:
+    lib = open_library(root)
+    wanted = species.casefold() if species else None
+    results, skipped = [], 0
+    for doc in sorted(lib.documents.values(), key=lambda d: d.sha256):
+        if sha256 and not doc.sha256.startswith(sha256):
+            continue
+        if wanted and not any(s.casefold() == wanted for s in doc.species):
+            continue
+        if not doc.path.exists():
+            continue
+        texts = page_texts(doc)
+        if texts["method"] != "pdf_text_layer" or texts["empty_pages"] == 0:
+            skipped += 1
+            continue
+        if len(results) >= max(1, min(max_documents, 100)):
+            break
+        try:
+            results.append(ocr_document(doc, lang=lang))
+        except Exception as exc:
+            results.append({"sha256": doc.sha256, "error": f"{type(exc).__name__}: {exc}"})
+    return {
+        "root": str(lib.root),
+        "documents_ocred": len(results),
+        "documents_skipped_with_text": skipped,
+        "results": results,
+        "note": "OCR text only fills pages without a text layer and is reported as text_source='ocr' in search hits and evidence checks.",
+    }
 
 
 def search(
@@ -300,7 +446,7 @@ def search(
                     "BibObjIDs": doc.references,
                     "EDocIDs": doc.edoc_ids,
                     "species": doc.species,
-                    "text_source": texts["method"],
+                    "text_source": texts["page_sources"][number - 1],
                 }
             )
             if len(hits) >= limit:
@@ -313,7 +459,7 @@ def search(
         "hits": hits,
         "truncated": len(hits) >= limit,
         "documents_without_text_layer": no_text[:50],
-        "note": "Scanned PDFs without a text layer cannot be searched until OCR is added; they are listed, not treated as 'no mention'.",
+        "note": "Documents without searchable text are listed, not treated as 'no mention'; run library_ocr on them.",
     }
 
 
@@ -331,7 +477,7 @@ def page_text(root: str | Path, sha256: str, pdf_page: int, max_chars: int = 800
         **doc.public(lib.root),
         "pdf_page": pdf_page,
         "page_count": texts["page_count"],
-        "text_source": texts["method"],
+        "text_source": texts["page_sources"][pdf_page - 1],
         "text": text[: max(500, min(max_chars, 20000))],
         "truncated": len(text) > max_chars,
     }

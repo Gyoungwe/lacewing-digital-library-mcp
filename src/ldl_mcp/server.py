@@ -9,7 +9,7 @@ from pypdf import PdfReader
 
 from mcp.server import FastMCP
 
-from . import auth, distribution, evidence, export, figures, jobs, library, research_scope
+from . import auth, distribution, evidence, export, figures, jobs, library, merge, research_scope
 from .client import LDLClient
 from .downloader import DOWNLOAD_MODES
 from .paths import libraries_dir, subdir
@@ -535,6 +535,26 @@ def library_search(
 def library_page_text(root: str, sha256: str, pdf_page: int, max_chars: int = 8000) -> dict[str, Any]:
     """Return the text layer of one PDF page (for reading 'Material examined' / type sections before recording evidence)."""
     return library.page_text(root, sha256, pdf_page, max_chars=max_chars)
+
+
+@mcp.tool()
+def library_ocr(
+    root: str | None = None,
+    sha256: str | None = None,
+    species: str | None = None,
+    lang: str = "eng",
+    max_documents: int = 10,
+) -> dict[str, Any]:
+    """OCR pages that have no PDF text layer (scanned papers) with local Tesseract; results are cached, marked text_source='ocr', and never overwrite the original text layer. lang e.g. eng, deu, fra, chi_sim, eng+deu. Omit root to check OCR availability."""
+    if not root:
+        return library.ocr_available()
+    return library.ocr_library(root, sha256=sha256, species=species, lang=lang, max_documents=max_documents)
+
+
+@mcp.tool()
+def library_merge(parent: str, destination: str | None = None, mode: str = "copy", dry_run: bool = True) -> dict[str, Any]:
+    """Merge all LDL_<Genus> libraries under parent into one SHA-256-deduplicated unified library (default <parent>/LDL_统一文献库). Non-destructive: sources are never modified or deleted. mode: copy | hardlink. Run with dry_run=True first to see the plan."""
+    return merge.merge_libraries(parent, destination=destination, mode=mode, dry_run=dry_run)
 
 
 # ---------------------------------------------------------------------------
